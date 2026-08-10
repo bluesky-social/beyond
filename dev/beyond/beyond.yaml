@@ -1,0 +1,11 @@
+sessions:
+  http_lifetime: 12h
+
+admin_groups:
+  - "authentik Admins"
+
+applications:
+  echo:
+    upstream: http://localhost:18080
+    host: localhost
+    allowed_groups: [engineering]

@@ -1,0 +1,82 @@
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: "${{ github.workflow }}-${{ github.head_ref || github.ref }}"
+  cancel-in-progress: true
+
+# Fork PRs run this workflow: least privilege, read-only.
+permissions:
+  contents: read
+
+jobs:
+  test:
+    # GitHub-hosted runners only: this is a public repo, and fork PRs must
+    # never land on self-hosted infrastructure.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4
+
+      - name: Git Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Set up Go tooling
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install Tools
+        run: just install-tools
+
+      - name: Stand Up Dependencies
+        run: |
+          just down
+          just up
+
+      - name: Run Tests
+        run: just test-race
+
+      - name: Tear Down Dependencies
+        if: always()
+        run: just down
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4
+
+      - name: Git Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Set up Go tooling
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build
+        run: just build
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4
+
+      - name: Git Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Set up Go tooling
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install Tools
+        run: just install-tools
+
+      - name: Lint
+        run: just lint

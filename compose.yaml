@@ -1,0 +1,77 @@
+name: beyond
+
+services:
+  postgres:
+    image: timescale/timescaledb:latest-pg17
+    environment:
+      POSTGRES_USER: beyond
+      POSTGRES_PASSWORD: beyond
+      POSTGRES_DB: beyond
+      PGPORT: ${BEYOND_POSTGRES_PORT:-31946}
+    ports:
+      - "${BEYOND_POSTGRES_PORT:-31946}:${BEYOND_POSTGRES_PORT:-31946}"
+    volumes:
+      - ./dev/initdb:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U beyond -p ${BEYOND_POSTGRES_PORT:-31946}"]
+      interval: 2s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+
+  authentik-server:
+    image: ghcr.io/goauthentik/server:2026.2.1
+    command: server
+    ports:
+      - "9000:9000"
+    environment:
+      AUTHENTIK_SECRET_KEY: dev-secret-key-not-for-production
+      AUTHENTIK_REDIS__HOST: redis
+      AUTHENTIK_POSTGRESQL__HOST: postgres
+      AUTHENTIK_POSTGRESQL__PORT: ${BEYOND_POSTGRES_PORT:-31946}
+      AUTHENTIK_POSTGRESQL__USER: beyond
+      AUTHENTIK_POSTGRESQL__PASSWORD: beyond
+      AUTHENTIK_POSTGRESQL__NAME: authentik
+      AUTHENTIK_BOOTSTRAP_PASSWORD: admin
+      AUTHENTIK_BOOTSTRAP_EMAIL: admin@beyond.local
+      AUTHENTIK_LOG_LEVEL: warning
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+
+  authentik-worker:
+    image: ghcr.io/goauthentik/server:2026.2.1
+    command: worker
+    environment:
+      AUTHENTIK_SECRET_KEY: dev-secret-key-not-for-production
+      AUTHENTIK_REDIS__HOST: redis
+      AUTHENTIK_POSTGRESQL__HOST: postgres
+      AUTHENTIK_POSTGRESQL__PORT: ${BEYOND_POSTGRES_PORT:-31946}
+      AUTHENTIK_POSTGRESQL__USER: beyond
+      AUTHENTIK_POSTGRESQL__PASSWORD: beyond
+      AUTHENTIK_POSTGRESQL__NAME: authentik
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+
+  echo:
+    image: ealen/echo-server:0.9.2
+    ports:
+      - "18080:18080"
+    environment:
+      PORT: "18080"
+
+networks:
+  default:
+    ipam:
+      config:
+        # Keep the dev bridge out of Tailscale/site-routed ranges. Docker's
+        # automatic 172.20.0.0/16 allocation can be stolen by policy routing,
+        # which makes published localhost ports accept TCP and then blackhole.
+        - subnet: ${BEYOND_DOCKER_SUBNET:-172.31.251.0/24}
