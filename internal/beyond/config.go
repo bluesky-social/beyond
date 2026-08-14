@@ -266,8 +266,8 @@ func (cfg *Config) populate() error {
 // apply.
 func parseExtendedDuration(s string) (time.Duration, error) {
 	s = strings.TrimSpace(s)
-	if strings.HasSuffix(s, "d") {
-		days, err := strconv.Atoi(strings.TrimSuffix(s, "d"))
+	if numeric, ok := strings.CutSuffix(s, "d"); ok {
+		days, err := strconv.Atoi(numeric)
 		if err != nil {
 			return 0, fmt.Errorf("invalid day duration: %w", err)
 		}
@@ -303,6 +303,16 @@ func (cfg *Config) validate() error {
 	if cfg.Portal != nil {
 		if cfg.Portal.Host == "" {
 			return fmt.Errorf("portal.host is required")
+		}
+		// Routing matches the request Host header with its port stripped
+		// against this value, so a scheme, port, or path here can never match
+		// any request — the process would start with a permanently
+		// unreachable portal. Reject the misconfiguration at boot instead.
+		// Comparing against Hostname() (not Host) also rejects a trailing
+		// empty-port colon like "portal.example.com:", which Parse accepts
+		// with an empty Port().
+		if u, err := url.Parse("https://" + cfg.Portal.Host); err != nil || u.Hostname() != cfg.Portal.Host {
+			return fmt.Errorf("portal.host must be a bare hostname without scheme, port, or path (got %q)", cfg.Portal.Host)
 		}
 		if cfg.Portal.Title == "" {
 			return fmt.Errorf("portal.title is required")

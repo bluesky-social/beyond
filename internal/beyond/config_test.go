@@ -225,6 +225,58 @@ applications:
 			errContains: "portal.host",
 		},
 		{
+			name: "portal host with port",
+			yaml: `
+portal:
+  host: portal.example.com:443
+applications:
+  app:
+    upstream: http://localhost:3000
+    host: app.example.com
+    allowed_groups: [eng]
+`,
+			errContains: "bare hostname",
+		},
+		{
+			name: "portal host with scheme",
+			yaml: `
+portal:
+  host: https://portal.example.com
+applications:
+  app:
+    upstream: http://localhost:3000
+    host: app.example.com
+    allowed_groups: [eng]
+`,
+			errContains: "bare hostname",
+		},
+		{
+			name: "portal host with trailing empty-port colon",
+			yaml: `
+portal:
+  host: "portal.example.com:"
+applications:
+  app:
+    upstream: http://localhost:3000
+    host: app.example.com
+    allowed_groups: [eng]
+`,
+			errContains: "bare hostname",
+		},
+		{
+			name: "portal host with path",
+			yaml: `
+portal:
+  host: portal.example.com/apps
+applications:
+  app:
+    upstream: http://localhost:3000
+    host: app.example.com
+    allowed_groups: [eng]
+`,
+			errContains: "bare hostname",
+		},
+		{
 			name: "launch URL host must match application host",
 			yaml: `
 applications:
