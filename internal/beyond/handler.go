@@ -56,6 +56,7 @@ type Handler struct {
 	oidcAuth     *OIDCAuth // nil if OIDC not configured
 	mu           sync.RWMutex
 	httpLifetime time.Duration
+	portal       *PortalConfig
 
 	// User validation against identity provider.
 	userValidator *UserValidator // nil if not configured
@@ -97,6 +98,7 @@ func NewHandler(cfg *Config, sessions *SessionManager, accessLog *AccessLogger) 
 		proxies:           NewProxyPool(),
 		accessLog:         accessLog,
 		httpLifetime:      cfg.Sessions.HTTPLifetime,
+		portal:            clonePortalConfig(cfg.Portal),
 		oidcLimiter:       newIPRateLimiter(oidcRateLimit, time.Minute),
 		bearerVerifiers:   newBearerVerifiers(),
 		bearerFailLimiter: newIPRateLimiter(bearerFailureRateLimit, time.Minute),
@@ -138,9 +140,30 @@ func (h *Handler) ReloadConfig(cfg *Config) {
 	h.authorizer.Reload(cfg)
 	h.mu.Lock()
 	h.httpLifetime = cfg.Sessions.HTTPLifetime
+	h.portal = clonePortalConfig(cfg.Portal)
 	h.mu.Unlock()
 	h.proxies.Reset()
 	h.bearerVerifiers.Reset()
+}
+
+func clonePortalConfig(portal *PortalConfig) *PortalConfig {
+	if portal == nil {
+		return nil
+	}
+	cloned := *portal
+	return &cloned
+}
+
+// portalForHost returns a detached portal config when host is the configured
+// portal host. Keeping this under the same lock as reload avoids a race if
+// runtime config reload is added later.
+func (h *Handler) portalForHost(host string) (PortalConfig, bool) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	if h.portal == nil || !strings.EqualFold(host, h.portal.Host) {
+		return PortalConfig{}, false
+	}
+	return *h.portal, true
 }
 
 // getHTTPLifetime returns the current HTTP session lifetime, safe for
@@ -185,7 +208,9 @@ func (h *Handler) startLogin(w http.ResponseWriter, r *http.Request) {
 	// Authentik's exact-match allowlist to prevent code interception. Refusing
 	// unconfigured hosts here keeps the unauthenticated, crypto-heavy login
 	// path from being driven for hosts beyond doesn't serve.
-	if h.authorizer.LookupApp(stripPort(r.Host)) == nil {
+	requestHost := stripPort(r.Host)
+	_, isPortal := h.portalForHost(requestHost)
+	if h.authorizer.LookupApp(requestHost) == nil && !isPortal {
 		beyondResponse(w, "not found", http.StatusNotFound)
 		return
 	}
@@ -221,6 +246,12 @@ func (h *Handler) startLogin(w http.ResponseWriter, r *http.Request) {
 // authorisation, and proxies allowed requests to the upstream application.
 func (h *Handler) handleProxy(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
+	host := stripPort(r.Host)
+
+	if portal, ok := h.portalForHost(host); ok {
+		h.handlePortal(w, r, portal, start)
+		return
+	}
 
 	// Mint apps are fully bespoke: they render HTML and run their own scoped
 	// OIDC flow rather than proxying, so they are dispatched before the session
@@ -300,32 +331,16 @@ func (h *Handler) handleProxy(w http.ResponseWriter, r *http.Request) {
 	// group/role change is reflected within userCacheTTL — the cookie-path
 	// equivalent of the bearer path's fresh per-request JWT groups.
 	//
-	// groups carries the freshly-resolved set. Only on an Authentik API error
-	// (ok==false) do we fall back to the session's frozen groups — the active
-	// gate, which fails closed, is the load-bearing revocation control. A
-	// successful resolve with an EMPTY set means the user was removed from
-	// every group; we must honor that (deny), NOT fall back to the stale login
-	// groups, or revoking a user's only group wouldn't take effect until the
-	// session expires.
-	groups := sess.Groups
-	if h.userValidator != nil {
-		active, fresh, ok := h.userValidator.Resolve(sess.Email)
-		if !active {
-			h.sessions.Clear(w)
-			beyondResponse(w, "account deactivated", http.StatusForbidden)
-			return
-		}
-		if ok {
-			// Fresh groups come straight from the Authentik API and never
-			// passed through login-time validation, so sanitize them to the
-			// same caps before they feed the authZ decision or the
-			// X-Beyond-Groups header framing. May be empty.
-			groups = sanitizeGroups(fresh)
-		}
+	// groups carries the freshly-resolved set. The active gate fails closed on
+	// an Authentik error. A successful resolve with an EMPTY set means the user
+	// was removed from every group; we must honor that (deny), NOT fall back to
+	// stale login groups, or revoking a user's only group would not take effect
+	// until the session expires.
+	identity, ok := h.resolveBrowserIdentity(w, sess)
+	if !ok {
+		return
 	}
-
-	// Strip port from Host.
-	host := stripPort(r.Host)
+	groups := identity.Groups
 
 	// Base log entry — common fields for every outcome of this request.
 	logEntry := AccessLogEntry{
@@ -392,17 +407,34 @@ func (h *Handler) handleProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	identity := &Identity{
-		Email:  sess.Email,
-		Name:   sess.Name,
-		Groups: groups,
-	}
-
 	rw := newResponseWriter(w)
 	proxy.ServeHTTP(rw, r, identity, app)
 
 	logEntry.BytesSent = rw.bytesWritten.Load()
 	logHTTP(proxyDecision(rw), rw.statusCode)
+}
+
+// resolveBrowserIdentity applies the post-session identity-provider check used
+// by every authenticated browser surface. A successful empty group set is
+// authoritative; an inactive result or IdP transport failure is denied by the
+// active gate. false means a response was already written.
+func (h *Handler) resolveBrowserIdentity(w http.ResponseWriter, sess *SessionData) (*Identity, bool) {
+	groups := sess.Groups
+	if h.userValidator != nil {
+		active, fresh, ok := h.userValidator.Resolve(sess.Email)
+		if !active {
+			h.sessions.Clear(w)
+			beyondResponse(w, "account deactivated", http.StatusForbidden)
+			return nil, false
+		}
+		if ok {
+			// Fresh groups come straight from the Authentik API and never
+			// passed through login-time validation, so sanitize them to the
+			// same caps before authorization or header framing. May be empty.
+			groups = sanitizeGroups(fresh)
+		}
+	}
+	return &Identity{Email: sess.Email, Name: sess.Name, Groups: groups}, true
 }
 
 // proxyDecision returns the access-log decision for a completed proxy request:

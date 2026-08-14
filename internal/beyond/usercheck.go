@@ -96,10 +96,7 @@ func (uv *UserValidator) IsActive(email string) bool {
 // The three return values disambiguate the cases the caller must treat
 // differently:
 //
-//   - (false, nil, false) — API error. Fail closed on the active gate; the
-//     caller should fall back to the session's frozen groups rather than
-//     denying all access on a transient blip (the active gate is the
-//     load-bearing revocation control; group freshness is best-effort).
+//   - (false, nil, false) — API error. Callers fail closed on the active gate.
 //   - (false, nil, true)  — definitively inactive. Deny.
 //   - (true, groups, true) — active; groups is the CURRENT set and may be
 //     EMPTY (an active user removed from every group). The caller MUST use

@@ -94,7 +94,8 @@ PROVIDER_BODY="{
     \"client_id\": \"beyond-dev-client-id\",
     \"client_secret\": \"beyond-dev-client-secret\",
     \"redirect_uris\": [
-        {\"matching_mode\": \"strict\", \"url\": \"http://localhost:8443/oidc/callback\"},
+        {\"matching_mode\": \"strict\", \"url\": \"https://localhost:8443/oidc/callback\"},
+        {\"matching_mode\": \"strict\", \"url\": \"https://echo.localhost:8443/oidc/callback\"},
         {\"matching_mode\": \"regex\", \"url\": \"http://127\\\\.0\\\\.0\\\\.1:\\\\d+/oidc/callback\"},
         {\"matching_mode\": \"regex\", \"url\": \"https://127\\\\.0\\\\.0\\\\.1:\\\\d+/oidc/callback\"}
     ],
@@ -126,7 +127,7 @@ else
         \"name\": \"Beyond (dev)\",
         \"slug\": \"beyond-dev\",
         \"provider\": ${PROVIDER_PK},
-        \"meta_launch_url\": \"http://localhost:8443\"
+        \"meta_launch_url\": \"https://localhost:8443\"
     }" > /dev/null
     echo "  application created"
 fi

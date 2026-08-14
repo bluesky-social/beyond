@@ -7,13 +7,13 @@ import (
 	"testing"
 )
 
-// TestDevRenderMintPages is a throwaway helper (gated on BEYOND_RENDER_DIR):
-// it renders the three mint page states with sample data so they can be viewed
-// in a browser. Not a real test — skipped unless the env var is set.
-func TestDevRenderMintPages(t *testing.T) {
+// TestDevRenderPages is a throwaway helper (gated on BEYOND_RENDER_DIR): it
+// renders the HTML page states with sample data so they can be viewed in a
+// browser. Not a real test — skipped unless the env var is set.
+func TestDevRenderPages(t *testing.T) {
 	dir := os.Getenv("BEYOND_RENDER_DIR")
 	if dir == "" {
-		t.Skip("set BEYOND_RENDER_DIR to render mint pages")
+		t.Skip("set BEYOND_RENDER_DIR to render development pages")
 	}
 	write := func(name string, tmplExec func(*bytes.Buffer) error) {
 		var buf bytes.Buffer
@@ -51,5 +51,17 @@ func TestDevRenderMintPages(t *testing.T) {
 			RevokeURL: "http://localhost:9000/if/user/#/settings;page-tokens",
 		})
 	})
-	t.Logf("rendered mint pages to %s", dir)
+	write("5-portal.html", func(b *bytes.Buffer) error {
+		return portalTmpl.Execute(b, portalPageData{
+			Title: "Applications",
+			User:  "test@beyond.local",
+			Nonce: "n5",
+			Applications: []PortalApplication{
+				{Name: "grafana", DisplayName: "Grafana", Description: "Metrics and dashboards", LaunchURL: "https://grafana.example.com/"},
+				{Name: "argocd", DisplayName: "Argo CD", Description: "Deployments and application health", LaunchURL: "https://argocd.example.com/"},
+				{Name: "netbox", DisplayName: "NetBox", Description: "Network and datacenter inventory", LaunchURL: "https://netbox.example.com/"},
+			},
+		})
+	})
+	t.Logf("rendered development pages to %s", dir)
 }

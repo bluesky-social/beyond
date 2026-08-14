@@ -10,8 +10,28 @@ install-tools:
     go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.10.1
     go install gotest.tools/gotestsum@v1.13.0
 
+# Generates the development-only TLS certificate used by Beyond. Keeping local
+# development on HTTPS exercises the same Secure-cookie and callback contract
+# as production instead of weakening those controls for localhost.
+dev-cert:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cert_dir="dev/beyond/tls"
+    cert="${cert_dir}/localhost.crt"
+    key="${cert_dir}/localhost.key"
+    if [[ -s "${cert}" && -s "${key}" ]]; then
+        exit 0
+    fi
+    mkdir -p "${cert_dir}"
+    openssl req -x509 -newkey rsa:2048 -sha256 -nodes -days 3650 \
+        -keyout "${key}" -out "${cert}" -subj "/CN=localhost" \
+        -addext "subjectAltName=DNS:localhost,DNS:echo.localhost,IP:127.0.0.1" \
+        >/dev/null 2>&1
+    chmod 0600 "${key}"
+    echo "generated development TLS certificate at ${cert}"
+
 # Stands up local development dependencies in docker
-up:
+up: dev-cert
     #!/usr/bin/env bash
     set -euo pipefail
 

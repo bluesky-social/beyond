@@ -5,12 +5,25 @@ A zero-trust network access (ZTNA) reverse proxy. It sits in front of internal H
 Apps and their allowed groups are declared in a YAML config:
 
 ```yaml
+portal:
+  host: example.com
+  title: Applications
+
 applications:
   grafana:
     upstream: http://grafana:3000
     host: grafana.example.com
+    display_name: Grafana
+    description: Metrics and dashboards
+    launch_url: https://grafana.example.com/
     allowed_groups: [engineering, ops]
 ```
+
+When `portal` is configured, its host serves a small authenticated application
+directory. It lists only applications allowed by the user's current groups;
+administrators see all applications. `display_name`, `description`, and
+`launch_url` are optional. Launch URLs default to `https://<host>/` and, when
+set explicitly, must remain on the application's configured host.
 
 The config is read once at startup; policy changes require a restart. beyond is stateless — run as many replicas as you like, as long as they share the same `BEYOND_SESSION_SECRET`.
 
@@ -35,7 +48,7 @@ beyond serves plain HTTP unless you hand it a cert with `BEYOND_TLS_CERT`/`BEYON
 
 ## Development
 
-You need Go, docker compose, and [just](https://github.com/casey/just).
+You need Go, docker compose, OpenSSL, and [just](https://github.com/casey/just).
 
 ```bash
 just install-tools  # one-time: golangci-lint + gotestsum
@@ -45,6 +58,11 @@ just run beyond serve
 just                # lint + test
 just down
 ```
+
+The development portal is at `https://localhost:8443`. `just up` generates an
+ignored, self-signed certificate for `localhost` and `echo.localhost`; accept
+or locally trust that certificate when using a browser. Sign in with
+`test@beyond.local` / `test`.
 
 Unit tests need no infrastructure; e2e/DB tests want the dev stack up and skip themselves otherwise. The dev Authentik login is `test@beyond.local` / `test`.
 

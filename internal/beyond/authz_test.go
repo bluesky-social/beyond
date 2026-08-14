@@ -114,3 +114,44 @@ func TestAuthorizer_Reload(t *testing.T) {
 	assert.False(t, allowed)
 	assert.Nil(t, app)
 }
+
+func TestAuthorizer_AllowedApplications(t *testing.T) {
+	t.Parallel()
+	cfg := testConfig()
+	cfg.Applications["grafana"].DisplayName = "Grafana"
+	cfg.Applications["grafana"].Description = "Dashboards"
+	cfg.Applications["grafana"].LaunchURL = "https://grafana.internal/"
+	cfg.Applications["argocd"].DisplayName = "Argo CD"
+	cfg.Applications["argocd"].LaunchURL = "https://argocd.internal/"
+
+	az := NewAuthorizer(cfg)
+
+	apps := az.AllowedApplications([]string{"engineering"})
+	require.Len(t, apps, 1)
+	assert.Equal(t, PortalApplication{
+		Name:        "grafana",
+		DisplayName: "Grafana",
+		Description: "Dashboards",
+		LaunchURL:   "https://grafana.internal/",
+	}, apps[0])
+}
+
+func TestAuthorizer_AllowedApplications_AdminSeesAllSorted(t *testing.T) {
+	t.Parallel()
+	cfg := testConfig()
+	cfg.Applications["grafana"].DisplayName = "Grafana"
+	cfg.Applications["grafana"].LaunchURL = "https://grafana.internal/"
+	cfg.Applications["argocd"].DisplayName = "Argo CD"
+	cfg.Applications["argocd"].LaunchURL = "https://argocd.internal/"
+
+	apps := NewAuthorizer(cfg).AllowedApplications([]string{"authentik Admins"})
+	require.Len(t, apps, 2)
+	assert.Equal(t, "argocd", apps[0].Name)
+	assert.Equal(t, "grafana", apps[1].Name)
+}
+
+func TestAuthorizer_AllowedApplications_Empty(t *testing.T) {
+	t.Parallel()
+	apps := NewAuthorizer(testConfig()).AllowedApplications([]string{"unrelated"})
+	assert.Empty(t, apps)
+}

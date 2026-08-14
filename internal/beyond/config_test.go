@@ -26,6 +26,10 @@ func TestLoadConfig(t *testing.T) {
 sessions:
   http_lifetime: 24h
 
+portal:
+  host: access.internal.example.com
+  title: Internal services
+
 admin_groups:
   - platform-admins
   - security-team
@@ -34,6 +38,9 @@ applications:
   dashboard:
     upstream: http://localhost:3000
     host: dashboard.internal.example.com
+    display_name: Grafana
+    description: Metrics and dashboards
+    launch_url: https://dashboard.internal.example.com/dashboards/
     allowed_groups:
       - engineering
       - ops
@@ -57,6 +64,9 @@ applications:
 
 	// Sessions
 	assert.Equal(t, 24*time.Hour, cfg.Sessions.HTTPLifetime)
+	require.NotNil(t, cfg.Portal)
+	assert.Equal(t, "access.internal.example.com", cfg.Portal.Host)
+	assert.Equal(t, "Internal services", cfg.Portal.Title)
 
 	// Admin groups
 	assert.Equal(t, []string{"platform-admins", "security-team"}, cfg.AdminGroups)
@@ -69,6 +79,9 @@ applications:
 	assert.Equal(t, "dashboard", dash.Name)
 	assert.Equal(t, "http://localhost:3000", dash.Upstream)
 	assert.Equal(t, "dashboard.internal.example.com", dash.Host)
+	assert.Equal(t, "Grafana", dash.DisplayName)
+	assert.Equal(t, "Metrics and dashboards", dash.Description)
+	assert.Equal(t, "https://dashboard.internal.example.com/dashboards/", dash.LaunchURL)
 	assert.Equal(t, []string{"engineering", "ops"}, dash.AllowedGroups)
 	require.NotNil(t, dash.GrafanaRoleProjection)
 	assert.Equal(t, "X-Beyond-Role", dash.GrafanaRoleProjection.Header)
@@ -84,6 +97,8 @@ applications:
 	assert.Equal(t, "api", api.Name)
 	assert.Equal(t, "http://localhost:8080", api.Upstream)
 	assert.Equal(t, "api.internal.example.com", api.Host)
+	assert.Equal(t, "api", api.DisplayName)
+	assert.Equal(t, "https://api.internal.example.com/", api.LaunchURL)
 	assert.Equal(t, []string{"engineering"}, api.AllowedGroups)
 }
 
@@ -102,6 +117,29 @@ applications:
 	require.NoError(t, err)
 
 	assert.Equal(t, 12*time.Hour, cfg.Sessions.HTTPLifetime, "default HTTP lifetime should be 12h")
+}
+
+func TestLoadConfig_PortalDefaults(t *testing.T) {
+	t.Parallel()
+	yaml := `
+portal:
+  host: Portal.Example.com
+applications:
+  myapp:
+    upstream: http://localhost:9000
+    host: App.Example.com
+    allowed_groups: [everyone]
+`
+	path := writeTempFile(t, yaml)
+	cfg, err := LoadConfig(path)
+	require.NoError(t, err)
+
+	require.NotNil(t, cfg.Portal)
+	assert.Equal(t, "portal.example.com", cfg.Portal.Host)
+	assert.Equal(t, "Beyond", cfg.Portal.Title)
+	assert.Equal(t, "app.example.com", cfg.Applications["myapp"].Host)
+	assert.Equal(t, "myapp", cfg.Applications["myapp"].DisplayName)
+	assert.Equal(t, "https://app.example.com/", cfg.Applications["myapp"].LaunchURL)
 }
 
 func TestLoadConfig_ValidationErrors(t *testing.T) {
@@ -159,6 +197,56 @@ applications:
       - eng
 `,
 			errContains: "shared.example.com",
+		},
+		{
+			name: "portal host duplicates application host",
+			yaml: `
+portal:
+  host: app.example.com
+applications:
+  app:
+    upstream: http://localhost:3000
+    host: app.example.com
+    allowed_groups: [eng]
+`,
+			errContains: "portal host",
+		},
+		{
+			name: "portal requires host",
+			yaml: `
+portal:
+  title: Services
+applications:
+  app:
+    upstream: http://localhost:3000
+    host: app.example.com
+    allowed_groups: [eng]
+`,
+			errContains: "portal.host",
+		},
+		{
+			name: "launch URL host must match application host",
+			yaml: `
+applications:
+  app:
+    upstream: http://localhost:3000
+    host: app.example.com
+    launch_url: https://elsewhere.example.com/
+    allowed_groups: [eng]
+`,
+			errContains: "launch_url host",
+		},
+		{
+			name: "launch URL must use HTTPS",
+			yaml: `
+applications:
+  app:
+    upstream: http://localhost:3000
+    host: app.example.com
+    launch_url: http://app.example.com/
+    allowed_groups: [eng]
+`,
+			errContains: "launch_url must be an absolute https URL",
 		},
 		{
 			name: "duplicate host differing only in case",

@@ -11,7 +11,8 @@ import (
 var (
 	// --- HTTP Proxy ---
 
-	// httpRequestDuration tracks the full lifecycle of proxied HTTP requests.
+	// httpRequestDuration tracks the full lifecycle of public HTTP requests,
+	// including proxied applications and Beyond's authenticated portal.
 	// Labels: method, decision (allow/deny/upgrade/error/redirect), status_code,
 	// host. "redirect" is a browser sent into the OIDC login flow.
 	//
@@ -24,7 +25,7 @@ var (
 	httpRequestDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
 		Namespace: "beyond",
 		Name:      "http_request_duration_seconds",
-		Help:      "Duration of HTTP proxy requests.",
+		Help:      "Duration of public HTTP requests.",
 		Buckets:   prometheus.DefBuckets,
 	}, []string{"method", "decision", "status_code", "host"})
 

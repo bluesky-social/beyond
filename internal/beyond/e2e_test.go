@@ -109,6 +109,51 @@ func beyondServer(t *testing.T) *httptest.Server {
 	return srv
 }
 
+func portalServer(t *testing.T) *httptest.Server {
+	t.Helper()
+
+	sharedOIDCProviderOnce.Do(initOIDCProvider)
+	if !authentikAvailable {
+		t.Skipf("Authentik not reachable at %s (run `just up`)", authentikURL)
+	}
+
+	sm, err := NewSessionManager([][]byte{[]byte("0123456789abcdef0123456789abcdef")}, 12*time.Hour)
+	require.NoError(t, err)
+	cfg := &Config{
+		Sessions:    SessionConfig{HTTPLifetime: 12 * time.Hour},
+		Portal:      &PortalConfig{Host: "PLACEHOLDER", Title: "Internal services"},
+		AdminGroups: []string{"authentik Admins"},
+		Applications: map[string]*Application{
+			"grafana": {
+				Name: "grafana", Host: "grafana.internal", Upstream: "http://localhost:3000",
+				DisplayName: "Grafana", Description: "Metrics and dashboards",
+				LaunchURL: "https://grafana.internal/", AllowedGroups: []string{"engineering"},
+			},
+			"argocd": {
+				Name: "argocd", Host: "argocd.internal", Upstream: "http://localhost:8080",
+				DisplayName: "Argo CD", LaunchURL: "https://argocd.internal/", AllowedGroups: []string{"platform"},
+			},
+		},
+	}
+	handler := NewHandler(cfg, sm, &AccessLogger{Logger: testLogger()})
+	srv := httptest.NewTLSServer(handler)
+	t.Cleanup(srv.Close)
+
+	srvURL, err := url.Parse(srv.URL)
+	require.NoError(t, err)
+	cfg.Portal.Host = srvURL.Hostname()
+	handler.ReloadConfig(cfg)
+	handler.SetOIDCAuth(&OIDCAuth{
+		provider: sharedOIDCProvider,
+		config: oauth2.Config{
+			ClientID: "beyond-dev-client-id", ClientSecret: "beyond-dev-client-secret",
+			Endpoint: sharedOIDCProvider.Endpoint(), Scopes: []string{oidc.ScopeOpenID, "profile", "email", "groups"},
+		},
+		verifier: sharedOIDCProvider.Verifier(&oidc.Config{ClientID: "beyond-dev-client-id"}),
+	})
+	return srv
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -166,6 +211,25 @@ func TestE2E_UnauthenticatedRedirect(t *testing.T) {
 func TestE2E_FullOIDCFlow(t *testing.T) {
 	t.Parallel()
 	srv := beyondServer(t)
+	resp, body := completeDevOIDCLogin(t, srv, "/")
+	assert.Equal(t, 200, resp.StatusCode, "should get proxied echo response; body: %s", string(body[:min(len(body), 500)]))
+}
+
+func TestE2E_PortalFullOIDCFlowFiltersApplications(t *testing.T) {
+	t.Parallel()
+	srv := portalServer(t)
+	resp, body := completeDevOIDCLogin(t, srv, "/")
+
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	html := string(body)
+	assert.Contains(t, html, "Internal services")
+	assert.Contains(t, html, "Grafana")
+	assert.NotContains(t, html, "Argo CD")
+	assert.NotContains(t, html, "platform")
+}
+
+func completeDevOIDCLogin(t *testing.T, srv *httptest.Server, path string) (*http.Response, []byte) {
+	t.Helper()
 
 	jar, err := cookiejar.New(nil)
 	require.NoError(t, err)
@@ -190,7 +254,7 @@ func TestE2E_FullOIDCFlow(t *testing.T) {
 	}
 
 	// 1. Hit beyond → get OIDC redirect.
-	resp, err := noFollow.Get(srv.URL + "/")
+	resp, err := noFollow.Get(srv.URL + path)
 	require.NoError(t, err)
 	_ = resp.Body.Close()
 	require.Equal(t, 302, resp.StatusCode)
@@ -252,7 +316,7 @@ func TestE2E_FullOIDCFlow(t *testing.T) {
 	_ = resp.Body.Close()
 
 	t.Logf("final: %s status=%d", resp.Request.URL.String(), resp.StatusCode)
-	assert.Equal(t, 200, resp.StatusCode, "should get proxied echo response; body: %s", string(body[:min(len(body), 500)]))
+	return resp, body
 }
 
 // mintServer spins up an in-process beyond configured as a mint app, backed by
