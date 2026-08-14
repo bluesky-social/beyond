@@ -94,7 +94,8 @@ PROVIDER_BODY="{
     \"client_id\": \"beyond-dev-client-id\",
     \"client_secret\": \"beyond-dev-client-secret\",
     \"redirect_uris\": [
-        {\"matching_mode\": \"strict\", \"url\": \"http://localhost:8443/oidc/callback\"},
+        {\"matching_mode\": \"strict\", \"url\": \"https://localhost:8443/oidc/callback\"},
+        {\"matching_mode\": \"strict\", \"url\": \"https://echo.localhost:8443/oidc/callback\"},
         {\"matching_mode\": \"regex\", \"url\": \"http://127\\\\.0\\\\.0\\\\.1:\\\\d+/oidc/callback\"},
         {\"matching_mode\": \"regex\", \"url\": \"https://127\\\\.0\\\\.0\\\\.1:\\\\d+/oidc/callback\"}
     ],
@@ -116,17 +117,26 @@ else
     echo "  provider pk: ${PROVIDER_PK}"
 fi
 
-# Create or find application.
-EXISTING_APP=$(api GET "/api/v3/core/applications/?slug=beyond-dev" | python3 -c "import sys,json; print(len(json.load(sys.stdin)['results']))")
+# Create or update application. The update path keeps meta_launch_url and the
+# provider link current for dev stacks that were set up before those values
+# changed (e.g. the http -> https launch URL migration).
+EXISTING_APP_JSON=$(api GET "/api/v3/core/applications/?slug=beyond-dev")
+EXISTING_APP=$(echo "$EXISTING_APP_JSON" | python3 -c "import sys,json; print(len(json.load(sys.stdin)['results']))")
 if [ "$EXISTING_APP" != "0" ]; then
-    echo "  application already exists"
+    APP_PK=$(echo "$EXISTING_APP_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin)['results'][0]['pk'])")
+    echo "  updating existing application (pk: ${APP_PK})..."
+    api PATCH "/api/v3/core/applications/${APP_PK}/" -d "{
+        \"provider\": ${PROVIDER_PK},
+        \"meta_launch_url\": \"https://localhost:8443\"
+    }" > /dev/null
+    echo "  application updated"
 else
     echo "  creating application..."
     api POST "/api/v3/core/applications/" -d "{
         \"name\": \"Beyond (dev)\",
         \"slug\": \"beyond-dev\",
         \"provider\": ${PROVIDER_PK},
-        \"meta_launch_url\": \"http://localhost:8443\"
+        \"meta_launch_url\": \"https://localhost:8443\"
     }" > /dev/null
     echo "  application created"
 fi

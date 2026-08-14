@@ -14,8 +14,18 @@ import (
 // Config holds the full beyond configuration.
 type Config struct {
 	Sessions     SessionConfig           `yaml:"sessions"`
+	Portal       *PortalConfig           `yaml:"portal"`
 	AdminGroups  []string                `yaml:"admin_groups"`
 	Applications map[string]*Application `yaml:"applications"`
+}
+
+// PortalConfig enables the authenticated application directory on its own
+// host. The portal is deliberately separate from Applications: it is a Beyond
+// surface, not a proxied resource, and any authenticated user may open it even
+// when their current group set grants no applications.
+type PortalConfig struct {
+	Host  string `yaml:"host"`
+	Title string `yaml:"title"`
 }
 
 // SessionConfig controls session lifetimes.
@@ -28,6 +38,9 @@ type Application struct {
 	Name                  string                 `yaml:"-"` // populated from map key after parse
 	Upstream              string                 `yaml:"upstream"`
 	Host                  string                 `yaml:"host"`
+	DisplayName           string                 `yaml:"display_name"`
+	Description           string                 `yaml:"description"`
+	LaunchURL             string                 `yaml:"launch_url"`
 	AllowedGroups         []string               `yaml:"allowed_groups"`
 	GrafanaRoleProjection *GrafanaRoleProjection `yaml:"grafana_role_projection"`
 	BearerAuth            *BearerAuthConfig      `yaml:"bearer_auth"`
@@ -196,6 +209,9 @@ func applyDefaults(cfg *Config) {
 	if cfg.Sessions.HTTPLifetime == 0 {
 		cfg.Sessions.HTTPLifetime = 12 * time.Hour
 	}
+	if cfg.Portal != nil && cfg.Portal.Title == "" {
+		cfg.Portal.Title = "Beyond"
+	}
 	for _, app := range cfg.Applications {
 		if app != nil && app.MintAuth != nil && app.MintAuth.TokenScopeName == "" {
 			app.MintAuth.TokenScopeName = defaultMintTokenScopeName
@@ -205,6 +221,9 @@ func applyDefaults(cfg *Config) {
 
 // populate sets derived fields that cannot be expressed in YAML.
 func (cfg *Config) populate() error {
+	if cfg.Portal != nil {
+		cfg.Portal.Host = strings.ToLower(cfg.Portal.Host)
+	}
 	for name, app := range cfg.Applications {
 		if app == nil {
 			return fmt.Errorf("application %q has no configuration", name)
@@ -217,6 +236,12 @@ func (cfg *Config) populate() error {
 		// and "app.example.com" could be two apps, and routing would hinge on
 		// the exact Host-header case.
 		app.Host = strings.ToLower(app.Host)
+		if app.DisplayName == "" {
+			app.DisplayName = name
+		}
+		if app.LaunchURL == "" && app.Host != "" {
+			app.LaunchURL = (&url.URL{Scheme: "https", Host: app.Host, Path: "/"}).String()
+		}
 
 		// Parse the mint token_lifetime here (not at validate time) so the
 		// derived Duration is available to the handler. A malformed value is a
@@ -241,8 +266,8 @@ func (cfg *Config) populate() error {
 // apply.
 func parseExtendedDuration(s string) (time.Duration, error) {
 	s = strings.TrimSpace(s)
-	if strings.HasSuffix(s, "d") {
-		days, err := strconv.Atoi(strings.TrimSuffix(s, "d"))
+	if numeric, ok := strings.CutSuffix(s, "d"); ok {
+		days, err := strconv.Atoi(numeric)
 		if err != nil {
 			return 0, fmt.Errorf("invalid day duration: %w", err)
 		}
@@ -275,6 +300,28 @@ func (cfg *Config) validate() error {
 		return fmt.Errorf("sessions.http_lifetime %s exceeds the maximum of %s", cfg.Sessions.HTTPLifetime, maxHTTPLifetime)
 	}
 
+	if cfg.Portal != nil {
+		if cfg.Portal.Host == "" {
+			return fmt.Errorf("portal.host is required")
+		}
+		// Routing matches the request Host header with its port stripped
+		// against this value, so a scheme, port, or path here can never match
+		// any request — the process would start with a permanently
+		// unreachable portal. Reject the misconfiguration at boot instead.
+		// Comparing against Hostname() (not Host) also rejects a trailing
+		// empty-port colon like "portal.example.com:", which Parse accepts
+		// with an empty Port().
+		if u, err := url.Parse("https://" + cfg.Portal.Host); err != nil || u.Hostname() != cfg.Portal.Host {
+			return fmt.Errorf("portal.host must be a bare hostname without scheme, port, or path (got %q)", cfg.Portal.Host)
+		}
+		if cfg.Portal.Title == "" {
+			return fmt.Errorf("portal.title is required")
+		}
+		if containsCtrl(cfg.Portal.Title) {
+			return fmt.Errorf("portal.title contains control characters")
+		}
+	}
+
 	// Validate applications.
 	seenHosts := make(map[string]string) // host -> app name
 	for name, app := range cfg.Applications {
@@ -295,6 +342,18 @@ func (cfg *Config) validate() error {
 		}
 		if app.Host == "" {
 			return fmt.Errorf("application %q: host is required", name)
+		}
+		if cfg.Portal != nil && app.Host == cfg.Portal.Host {
+			return fmt.Errorf("application %q: host %q conflicts with portal host", name, app.Host)
+		}
+		if app.DisplayName == "" {
+			return fmt.Errorf("application %q: display_name is required", name)
+		}
+		if containsCtrl(app.DisplayName) || containsCtrl(app.Description) {
+			return fmt.Errorf("application %q: display metadata contains control characters", name)
+		}
+		if err := validateLaunchURL(name, app); err != nil {
+			return err
 		}
 		if len(app.AllowedGroups) == 0 {
 			return fmt.Errorf("application %q: allowed_groups is required", name)
@@ -320,6 +379,20 @@ func (cfg *Config) validate() error {
 		seenHosts[app.Host] = name
 	}
 
+	return nil
+}
+
+func validateLaunchURL(appName string, app *Application) error {
+	u, err := url.Parse(app.LaunchURL)
+	if err != nil {
+		return fmt.Errorf("application %q: launch_url is not a valid URL: %w", appName, err)
+	}
+	if u.Scheme != "https" || u.Host == "" || u.User != nil {
+		return fmt.Errorf("application %q: launch_url must be an absolute https URL (got %q)", appName, app.LaunchURL)
+	}
+	if !strings.EqualFold(u.Hostname(), app.Host) {
+		return fmt.Errorf("application %q: launch_url host %q must match application host %q", appName, u.Hostname(), app.Host)
+	}
 	return nil
 }
 

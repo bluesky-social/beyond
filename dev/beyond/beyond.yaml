@@ -1,11 +1,18 @@
 sessions:
   http_lifetime: 12h
 
+portal:
+  host: localhost
+  title: Applications
+
 admin_groups:
   - "authentik Admins"
 
 applications:
   echo:
     upstream: http://localhost:18080
-    host: localhost
+    host: echo.localhost
+    display_name: Echo
+    description: Inspect requests forwarded through Beyond.
+    launch_url: https://echo.localhost:8443/
     allowed_groups: [engineering]
