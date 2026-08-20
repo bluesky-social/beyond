@@ -36,6 +36,7 @@ applications:
   mcp:
     upstream: http://agent-gateway:4004
     host: mcp.example.com
+    preserve_host: true
     allowed_groups: [engineering]
     bearer_auth:
       issuer: https://auth.example.com/application/o/mcp/
@@ -56,6 +57,11 @@ the request. The upstream is therefore the sole access-control boundary for
 every delegated path and must authenticate it (for example, by returning a
 `401` with `WWW-Authenticate`) or intentionally serve it anonymously. Never
 delegate a path that exposes data or actions before upstream authentication.
+
+`preserve_host: true` sends the configured public application hostname in the
+upstream HTTP `Host` header while still dialing `upstream`. This is useful when
+the upstream derives OAuth metadata or absolute URLs from `Host`; Beyond still
+sets authoritative `X-Forwarded-Host` and `X-Forwarded-Proto` headers as usual.
 
 ## Running with docker
 

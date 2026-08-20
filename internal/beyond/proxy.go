@@ -40,6 +40,13 @@ func newBeyondProxy(upstream string) (*BeyondProxy, error) {
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.SetURL(u)
 			pr.Out.Host = u.Host
+			pc, _ := pr.In.Context().Value(proxyContextKey{}).(*proxyContext)
+			if pc != nil && pc.app != nil && pc.app.PreserveHost {
+				// Use the canonical configured host, not the client-supplied
+				// authority (which may carry an arbitrary port). URL.Host still
+				// points at the in-cluster upstream and remains the dial target.
+				pr.Out.Host = pc.app.Host
+			}
 
 			// Inject identity headers onto the OUTBOUND request, not the
 			// inbound one. The stdlib runs removeHopByHopHeaders on the
@@ -48,8 +55,7 @@ func newBeyondProxy(upstream string) (*BeyondProxy, error) {
 			// has already been stripped from pr.Out. Injecting here means a
 			// client cannot erase the identity we vouch for via a crafted
 			// `Connection: X-Beyond-User` header (see proxy_test.go).
-			pc, _ := pr.In.Context().Value(proxyContextKey{}).(*proxyContext)
-			if pc != nil {
+			if pc != nil && pc.identity != nil {
 				injectBeyondHeaders(pr.Out, pc.identity)
 				injectApplicationHeaders(pr.Out, pc.app, pc.identity)
 			}
@@ -93,14 +99,14 @@ func (bp *BeyondProxy) ServeHTTP(w http.ResponseWriter, r *http.Request, identit
 
 // ServeHTTPPassthrough forwards the request to the upstream without injecting
 // any X-Beyond-* identity headers. The Rewrite hook still runs (URL rewrite,
-// X-Forwarded-* substitution, cookie scrubbing), but the identity-injection
-// block is skipped because no proxyContext is placed in the request context.
+// optional Host preservation, X-Forwarded-* substitution, cookie scrubbing),
+// but the identity-injection block is skipped because the context has no
+// identity.
 // Callers are responsible for stripping inbound X-Beyond-* spoofs BEFORE
 // calling this — see handlePassthrough.
-func (bp *BeyondProxy) ServeHTTPPassthrough(w http.ResponseWriter, r *http.Request) {
-	// No context value: pc will be nil inside the Rewrite hook, so
-	// injectBeyondHeaders and injectApplicationHeaders are not called.
-	bp.rp.ServeHTTP(w, r)
+func (bp *BeyondProxy) ServeHTTPPassthrough(w http.ResponseWriter, r *http.Request, app *Application) {
+	ctx := context.WithValue(r.Context(), proxyContextKey{}, &proxyContext{app: app})
+	bp.rp.ServeHTTP(w, r.WithContext(ctx))
 }
 
 // beyondCookieNames are the cookies beyond owns and must never forward to an

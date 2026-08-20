@@ -108,11 +108,11 @@ func (h *Handler) handleUntrustedPassthrough(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	// Proxy without an Identity: ServeHTTPPassthrough omits the proxyContext
-	// so the Rewrite hook skips X-Beyond-* injection. X-Forwarded-* and
-	// cookie scrubbing still happen (they are unconditional in the Rewrite hook).
+	// Proxy without an Identity. The app remains in context so opt-in transport
+	// behavior such as preserve_host still applies, while the Rewrite hook skips
+	// X-Beyond-* injection. X-Forwarded-* and cookie scrubbing remain unconditional.
 	rw := newResponseWriter(w)
-	proxy.ServeHTTPPassthrough(rw, r)
+	proxy.ServeHTTPPassthrough(rw, r, app)
 
 	logHTTP(proxyDecision(rw), rw.statusCode)
 }

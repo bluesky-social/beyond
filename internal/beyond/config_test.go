@@ -55,6 +55,7 @@ applications:
   api:
     upstream: http://localhost:8080
     host: api.internal.example.com
+    preserve_host: true
     allowed_groups:
       - engineering
 `
@@ -97,6 +98,7 @@ applications:
 	assert.Equal(t, "api", api.Name)
 	assert.Equal(t, "http://localhost:8080", api.Upstream)
 	assert.Equal(t, "api.internal.example.com", api.Host)
+	assert.True(t, api.PreserveHost)
 	assert.Equal(t, "api", api.DisplayName)
 	assert.Equal(t, "https://api.internal.example.com/", api.LaunchURL)
 	assert.Equal(t, []string{"engineering"}, api.AllowedGroups)

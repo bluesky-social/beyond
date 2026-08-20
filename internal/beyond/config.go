@@ -36,13 +36,18 @@ type SessionConfig struct {
 
 // Application represents a proxied HTTP application.
 type Application struct {
-	Name                  string                 `yaml:"-"` // populated from map key after parse
-	Upstream              string                 `yaml:"upstream"`
-	Host                  string                 `yaml:"host"`
-	DisplayName           string                 `yaml:"display_name"`
-	Description           string                 `yaml:"description"`
-	LaunchURL             string                 `yaml:"launch_url"`
-	AllowedGroups         []string               `yaml:"allowed_groups"`
+	Name          string   `yaml:"-"` // populated from map key after parse
+	Upstream      string   `yaml:"upstream"`
+	Host          string   `yaml:"host"`
+	DisplayName   string   `yaml:"display_name"`
+	Description   string   `yaml:"description"`
+	LaunchURL     string   `yaml:"launch_url"`
+	AllowedGroups []string `yaml:"allowed_groups"`
+	// PreserveHost sends the application's configured public hostname in the
+	// upstream HTTP Host header instead of the upstream service address. Use it
+	// for upstreams that construct protocol metadata or absolute URLs from Host.
+	// The dial target remains Upstream.
+	PreserveHost          bool                   `yaml:"preserve_host"`
 	GrafanaRoleProjection *GrafanaRoleProjection `yaml:"grafana_role_projection"`
 	BearerAuth            *BearerAuthConfig      `yaml:"bearer_auth"`
 	CredentialAuth        *CredentialAuthConfig  `yaml:"credential_auth"`

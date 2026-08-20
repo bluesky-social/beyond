@@ -228,6 +228,53 @@ func TestReverseProxy_OverwritesForwardedHeaders(t *testing.T) {
 	assert.NotContains(t, gotFor, "10.9.9.9", "client-supplied X-Forwarded-For must not survive")
 }
 
+func TestReverseProxy_PreserveHostUsesConfiguredApplicationHost(t *testing.T) {
+	t.Parallel()
+	var gotHost string
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotHost = r.Host
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer backend.Close()
+
+	bp, err := newBeyondProxy(backend.URL)
+	require.NoError(t, err)
+	app := &Application{Host: "mcp.example.com", PreserveHost: true}
+	req := httptest.NewRequest(http.MethodGet, "/.well-known/oauth-protected-resource/mcp", nil)
+	req.Host = "mcp.example.com:8443"
+	rec := httptest.NewRecorder()
+
+	bp.ServeHTTP(rec, req, &Identity{Email: "alice@example.com"}, app)
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, "mcp.example.com", gotHost,
+		"preserve_host must use the canonical app host, not the upstream service or client-supplied port")
+}
+
+func TestReverseProxy_PassthroughPreservesConfiguredApplicationHostWithoutIdentity(t *testing.T) {
+	t.Parallel()
+	var gotHost, gotIdentity string
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotHost = r.Host
+		gotIdentity = r.Header.Get("X-Beyond-Email")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer backend.Close()
+
+	bp, err := newBeyondProxy(backend.URL)
+	require.NoError(t, err)
+	app := &Application{Host: "mcp.example.com", PreserveHost: true}
+	req := httptest.NewRequest(http.MethodGet, "/mcp", nil)
+	req.Host = "mcp.example.com"
+	rec := httptest.NewRecorder()
+
+	bp.ServeHTTPPassthrough(rec, req, app)
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, "mcp.example.com", gotHost)
+	assert.Empty(t, gotIdentity, "passthrough host preservation must not inject Beyond identity")
+}
+
 // TestReverseProxy_ScrubsBeyondSessionCookie is the L-5 regression test: the
 // _beyond_session cookie (and the oidc-state cookie) must not reach upstreams,
 // while unrelated cookies are preserved.
