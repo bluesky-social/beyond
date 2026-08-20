@@ -27,6 +27,36 @@ set explicitly, must remain on the application's configured host.
 
 The config is read once at startup; policy changes require a restart. beyond is stateless — run as many replicas as you like, as long as they share the same `BEYOND_SESSION_SECRET`.
 
+For machine protocols whose OAuth discovery begins unauthenticated, an app may
+delegate a narrow set of exact paths to an independently authenticating
+upstream while retaining Beyond JWT verification for bearer requests:
+
+```yaml
+applications:
+  mcp:
+    upstream: http://agent-gateway:4004
+    host: mcp.example.com
+    allowed_groups: [engineering]
+    bearer_auth:
+      issuer: https://auth.example.com/application/o/mcp/
+      jwks_url: http://authentik/application/o/mcp/jwks/
+      audience: mcp
+    unauthenticated_passthrough_paths:
+      - /mcp
+      - /.well-known/oauth-protected-resource/mcp
+```
+
+Only requests with no `Authorization` header use this path. Bearer requests
+still receive Beyond's JWT and group-policy checks.
+
+For the delegated paths themselves, Beyond applies no authorization:
+`allowed_groups` is not enforced, no identity is injected, and any client can
+reach them. Beyond strips inbound `X-Beyond-*` identity headers and forwards
+the request. The upstream is therefore the sole access-control boundary for
+every delegated path and must authenticate it (for example, by returning a
+`401` with `WWW-Authenticate`) or intentionally serve it anonymously. Never
+delegate a path that exposes data or actions before upstream authentication.
+
 ## Running with docker
 
 Images are published to `ghcr.io/bluesky-social/beyond`.

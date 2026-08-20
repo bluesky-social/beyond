@@ -277,6 +277,16 @@ func (h *Handler) handleProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Some machine protocols must reach the upstream once without credentials
+	// in order to discover how to authenticate. Match only explicitly listed,
+	// canonical paths and only when Authorization is absent. This happens
+	// before session loading so a stray Beyond browser cookie cannot replace
+	// the upstream protocol response with injected browser identity.
+	if app := h.authorizer.LookupApp(host); unauthenticatedPassthroughPath(r, app) {
+		h.handleUnauthenticatedPassthrough(w, r, app, start)
+		return
+	}
+
 	// Load session first so a valid browser session takes precedence over a
 	// stray Authorization header. A browser that sends BOTH a session cookie
 	// and a Bearer token (e.g. a misconfigured extension) should be served as

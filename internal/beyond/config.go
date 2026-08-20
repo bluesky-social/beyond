@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"path"
 	"strconv"
 	"strings"
 	"time"
@@ -61,6 +62,21 @@ type Application struct {
 	// "Bearer" is explicitly disallowed: it would bypass bearer_auth OIDC
 	// verification, which is beyond's own edge-auth mechanism for JWTs.
 	PassthroughAuthSchemes []string `yaml:"passthrough_auth_schemes"`
+	// UnauthenticatedPassthroughPaths lists exact, canonical URL paths that
+	// clients may reach without edge authentication. The upstream
+	// MUST authenticate or intentionally serve every listed path. This exists
+	// for protocols such as MCP whose OAuth discovery begins with an
+	// unauthenticated request and whose upstream must return the protocol's
+	// 401/metadata response itself.
+	//
+	// Beyond does not apply allowed_groups to these paths. The upstream is the
+	// sole authorization boundary for them and must not expose data or actions
+	// before it authenticates the request.
+	//
+	// The setting is accepted only together with bearer_auth. Requests carrying
+	// Authorization are never eligible: their JWT still follows beyond's normal
+	// signature, issuer, audience, expiry, and group-policy checks.
+	UnauthenticatedPassthroughPaths []string `yaml:"unauthenticated_passthrough_paths"`
 }
 
 // BearerAuthConfig enables OIDC access-token authentication for an
@@ -373,6 +389,9 @@ func (cfg *Config) validate() error {
 		if err := validatePassthroughAuthSchemes(name, app.PassthroughAuthSchemes); err != nil {
 			return err
 		}
+		if err := validateUnauthenticatedPassthroughPaths(name, app); err != nil {
+			return err
+		}
 		if prev, ok := seenHosts[app.Host]; ok {
 			return fmt.Errorf("duplicate host %q: used by both %q and %q", app.Host, prev, name)
 		}
@@ -563,6 +582,34 @@ func validatePassthroughAuthSchemes(appName string, schemes []string) error {
 		if strings.EqualFold(s, "Bearer") {
 			return fmt.Errorf("application %q: passthrough_auth_schemes[%d]: \"Bearer\" is not allowed — use bearer_auth for JWT verification", appName, i)
 		}
+	}
+	return nil
+}
+
+func validateUnauthenticatedPassthroughPaths(appName string, app *Application) error {
+	paths := app.UnauthenticatedPassthroughPaths
+	if len(paths) == 0 {
+		return nil
+	}
+	if app.BearerAuth == nil {
+		return fmt.Errorf("application %q: unauthenticated_passthrough_paths requires bearer_auth", appName)
+	}
+
+	seen := make(map[string]struct{}, len(paths))
+	for i, p := range paths {
+		if p == "" || p[0] != '/' {
+			return fmt.Errorf("application %q: unauthenticated_passthrough_paths[%d] %q must be an absolute path", appName, i, p)
+		}
+		if p == "/" {
+			return fmt.Errorf("application %q: unauthenticated_passthrough_paths[%d] must not expose the application root", appName, i)
+		}
+		if strings.ContainsAny(p, "?#%") || containsCtrl(p) || path.Clean(p) != p {
+			return fmt.Errorf("application %q: unauthenticated_passthrough_paths[%d] %q must be a canonical literal path without query, fragment, escaping, or control characters", appName, i, p)
+		}
+		if _, ok := seen[p]; ok {
+			return fmt.Errorf("application %q: unauthenticated_passthrough_paths[%d] duplicates %q", appName, i, p)
+		}
+		seen[p] = struct{}{}
 	}
 	return nil
 }

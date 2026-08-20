@@ -44,6 +44,14 @@ func passthroughScheme(r *http.Request, app *Application) (scheme, rawAuth strin
 // client cannot smuggle a forged identity through to the upstream. The
 // Authorization header is forwarded unchanged.
 func (h *Handler) handlePassthrough(w http.ResponseWriter, r *http.Request, app *Application, scheme string, start time.Time) {
+	h.handleUntrustedPassthrough(w, r, app, "http_passthrough", start)
+}
+
+// handleUntrustedPassthrough forwards a request without Beyond identity. It is
+// shared by credential-scheme passthrough and exact unauthenticated protocol
+// bootstrap paths; both rely on the upstream to authenticate or intentionally
+// serve the request.
+func (h *Handler) handleUntrustedPassthrough(w http.ResponseWriter, r *http.Request, app *Application, logType string, start time.Time) {
 	host := stripPort(r.Host)
 
 	logEntry := AccessLogEntry{
@@ -72,10 +80,9 @@ func (h *Handler) handlePassthrough(w http.ResponseWriter, r *http.Request, app 
 		logEntry.Decision = decision
 		logEntry.StatusCode = statusCode
 		logEntry.DurationMS = int(time.Since(start).Milliseconds())
-		// auth_mode distinguishes passthrough from bearer/session on log
-		// consumers without schema changes: stuff it in the Error field
-		// would be wrong; use the type string instead ("http_passthrough").
-		h.accessLog.Log("http_passthrough", logEntry)
+		// The type distinguishes delegated passthrough from bearer/session on
+		// log consumers without overloading an error or identity field.
+		h.accessLog.Log(logType, logEntry)
 	}
 
 	if app == nil {
