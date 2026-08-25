@@ -63,6 +63,29 @@ upstream HTTP `Host` header while still dialing `upstream`. This is useful when
 the upstream derives OAuth metadata or absolute URLs from `Host`; Beyond still
 sets authoritative `X-Forwarded-Host` and `X-Forwarded-Proto` headers as usual.
 
+## Identity headers for upstream services
+
+Beyond removes every client-supplied `X-Beyond-*` header before proxying a
+request. For an authenticated request, it adds the verified identity to the
+outbound request:
+
+| Header | Value | How to use it |
+| --- | --- | --- |
+| `X-Beyond-User` | The user's verified email address | Email-valued user identifier; it is currently identical to `X-Beyond-Email`. |
+| `X-Beyond-Email` | The user's verified email address | Use as the stable user identifier for new integrations. |
+| `X-Beyond-Name` | The user's display name | Use only for display; the header is omitted when no name is available. |
+| `X-Beyond-Groups` | Verified group names joined with `\|` | Split on `\|` and compare complete group names; the header is omitted when the user has no groups. |
+| Configured `grafana_role_projection.header` (commonly `X-Beyond-Role`) | `Admin`, `Editor`, `Viewer`, or `None` | Optional, app-specific Grafana role; present only when role projection is configured. |
+
+Treat the headers as trusted only when the upstream cannot be reached except
+through Beyond (for example, enforce this with a private network or network
+policy). A directly reachable upstream lets callers forge the same headers.
+Treat a missing identity header as unauthenticated and fail closed; Beyond
+intentionally injects no identity on configured unauthenticated or
+authentication-passthrough paths. Use `X-Beyond-Email`, not the display name,
+for identity, and perform exact group comparisons rather than substring
+matches.
+
 ## Running with docker
 
 Images are published to `ghcr.io/bluesky-social/beyond`.
