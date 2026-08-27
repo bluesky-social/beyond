@@ -287,6 +287,14 @@ func (h *Handler) handleProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A browser's CORS preflight intentionally carries no credentials. Apps
+	// with split UI/API origins can opt in to delegating that probe while the
+	// subsequent bearer-carrying request still goes through JWT verification.
+	if app := h.authorizer.LookupApp(host); corsPreflightPassthrough(r, app) {
+		h.handleCORSPreflightPassthrough(w, r, app, start)
+		return
+	}
+
 	// Load session first so a valid browser session takes precedence over a
 	// stray Authorization header. A browser that sends BOTH a session cookie
 	// and a Bearer token (e.g. a misconfigured extension) should be served as

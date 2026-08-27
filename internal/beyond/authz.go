@@ -51,6 +51,9 @@ func (az *Authorizer) AllowedApplications(userGroups []string) []PortalApplicati
 
 	apps := make([]PortalApplication, 0, len(az.applications))
 	for _, app := range az.applications {
+		if app.HideFromPortal {
+			continue
+		}
 		if !isAdmin && !applicationAllowsAnyGroup(app, userGroups) {
 			continue
 		}

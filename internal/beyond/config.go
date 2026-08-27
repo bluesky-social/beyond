@@ -36,13 +36,14 @@ type SessionConfig struct {
 
 // Application represents a proxied HTTP application.
 type Application struct {
-	Name          string   `yaml:"-"` // populated from map key after parse
-	Upstream      string   `yaml:"upstream"`
-	Host          string   `yaml:"host"`
-	DisplayName   string   `yaml:"display_name"`
-	Description   string   `yaml:"description"`
-	LaunchURL     string   `yaml:"launch_url"`
-	AllowedGroups []string `yaml:"allowed_groups"`
+	Name           string   `yaml:"-"` // populated from map key after parse
+	Upstream       string   `yaml:"upstream"`
+	Host           string   `yaml:"host"`
+	DisplayName    string   `yaml:"display_name"`
+	Description    string   `yaml:"description"`
+	LaunchURL      string   `yaml:"launch_url"`
+	HideFromPortal bool     `yaml:"hide_from_portal"`
+	AllowedGroups  []string `yaml:"allowed_groups"`
 	// PreserveHost sends the application's configured public hostname in the
 	// upstream HTTP Host header instead of the upstream service address. Use it
 	// for upstreams that construct protocol metadata or absolute URLs from Host.
@@ -82,6 +83,11 @@ type Application struct {
 	// Authorization are never eligible: their JWT still follows beyond's normal
 	// signature, issuer, audience, expiry, and group-policy checks.
 	UnauthenticatedPassthroughPaths []string `yaml:"unauthenticated_passthrough_paths"`
+	// CORSPreflightPassthrough delegates only well-formed, credential-free CORS
+	// preflight requests to the upstream. This is needed for split-origin apps
+	// whose browser API calls authenticate with bearer tokens: the OPTIONS probe
+	// carries no token, while the subsequent request still follows bearer_auth.
+	CORSPreflightPassthrough bool `yaml:"cors_preflight_passthrough"`
 }
 
 // BearerAuthConfig enables OIDC access-token authentication for an
@@ -396,6 +402,9 @@ func (cfg *Config) validate() error {
 		}
 		if err := validateUnauthenticatedPassthroughPaths(name, app); err != nil {
 			return err
+		}
+		if app.CORSPreflightPassthrough && app.BearerAuth == nil {
+			return fmt.Errorf("application %q: cors_preflight_passthrough requires bearer_auth", name)
 		}
 		if prev, ok := seenHosts[app.Host]; ok {
 			return fmt.Errorf("duplicate host %q: used by both %q and %q", app.Host, prev, name)

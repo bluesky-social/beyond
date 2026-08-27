@@ -155,3 +155,15 @@ func TestAuthorizer_AllowedApplications_Empty(t *testing.T) {
 	apps := NewAuthorizer(testConfig()).AllowedApplications([]string{"unrelated"})
 	assert.Empty(t, apps)
 }
+
+func TestAuthorizer_AllowedApplications_HidesInternalEntries(t *testing.T) {
+	t.Parallel()
+	cfg := testConfig()
+	cfg.Applications["grafana"].HideFromPortal = true
+
+	apps := NewAuthorizer(cfg).AllowedApplications([]string{"engineering"})
+
+	for _, app := range apps {
+		assert.NotEqual(t, "grafana", app.Name)
+	}
+}
