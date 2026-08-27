@@ -21,9 +21,11 @@ applications:
 
 When `portal` is configured, its host serves a small authenticated application
 directory. It lists only applications allowed by the user's current groups;
-administrators see all applications. `display_name`, `description`, and
-`launch_url` are optional. Launch URLs default to `https://<host>/` and, when
-set explicitly, must remain on the application's configured host.
+administrators see all applications except entries marked `hide_from_portal`.
+`display_name`, `description`, and `launch_url` are optional. Launch URLs
+default to `https://<host>/` and, when set explicitly, must remain on the
+application's configured host. Set `hide_from_portal: true` for supporting
+hosts such as a browser API origin.
 
 The config is read once at startup; policy changes require a restart. beyond is stateless — run as many replicas as you like, as long as they share the same `BEYOND_SESSION_SECRET`.
 
@@ -57,6 +59,13 @@ the request. The upstream is therefore the sole access-control boundary for
 every delegated path and must authenticate it (for example, by returning a
 `401` with `WWW-Authenticate`) or intentionally serve it anonymously. Never
 delegate a path that exposes data or actions before upstream authentication.
+
+Split-origin browser applications can opt in to
+`cors_preflight_passthrough: true` when their API uses `bearer_auth`. Beyond
+delegates only credential-free `OPTIONS` requests containing both `Origin` and
+`Access-Control-Request-Method`; the upstream remains responsible for its CORS
+policy. Actual API requests still require Beyond's normal session or verified
+bearer token.
 
 `preserve_host: true` sends the configured public application hostname in the
 upstream HTTP `Host` header while still dialing `upstream`. This is useful when
