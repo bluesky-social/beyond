@@ -93,6 +93,7 @@ PROVIDER_BODY="{
     \"client_type\": \"confidential\",
     \"client_id\": \"beyond-dev-client-id\",
     \"client_secret\": \"beyond-dev-client-secret\",
+    \"grant_types\": [\"authorization_code\", \"refresh_token\"],
     \"redirect_uris\": [
         {\"matching_mode\": \"strict\", \"url\": \"https://localhost:8443/oidc/callback\"},
         {\"matching_mode\": \"strict\", \"url\": \"https://echo.localhost:8443/oidc/callback\"},
@@ -165,6 +166,7 @@ MINT_PROVIDER_BODY="{
     \"invalidation_flow\": \"${INVAL_FLOW}\",
     \"client_type\": \"public\",
     \"client_id\": \"beyond-mint-dev-client-id\",
+    \"grant_types\": [\"authorization_code\", \"client_credentials\", \"refresh_token\"],
     \"redirect_uris\": [
         {\"matching_mode\": \"regex\", \"url\": \"http://127\\\\.0\\\\.0\\\\.1:\\\\d+/mint/callback\"},
         {\"matching_mode\": \"regex\", \"url\": \"https://127\\\\.0\\\\.0\\\\.1:\\\\d+/mint/callback\"}
