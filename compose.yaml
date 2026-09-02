@@ -22,7 +22,7 @@ services:
     image: redis:7-alpine
 
   authentik-server:
-    image: ghcr.io/goauthentik/server:2026.2.1
+    image: ghcr.io/goauthentik/server:2026.8.0
     command: server
     ports:
       - "9000:9000"
@@ -44,7 +44,7 @@ services:
         condition: service_started
 
   authentik-worker:
-    image: ghcr.io/goauthentik/server:2026.2.1
+    image: ghcr.io/goauthentik/server:2026.8.0
     command: worker
     environment:
       AUTHENTIK_SECRET_KEY: dev-secret-key-not-for-production

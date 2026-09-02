@@ -19,8 +19,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	jose "gopkg.in/go-jose/go-jose.v2"
-	"gopkg.in/go-jose/go-jose.v2/jwt"
+	jose "github.com/go-jose/go-jose/v4"
+	"github.com/go-jose/go-jose/v4/jwt"
 )
 
 // mockSingleUseOIDCProvider is like mockOIDCProviderWithClaims but enforces
@@ -103,7 +103,7 @@ func mockSingleUseOIDCProvider(t *testing.T, userClaims map[string]any) *httptes
 				Expiry:   jwt.NewNumericDate(now.Add(time.Hour)),
 				IssuedAt: jwt.NewNumericDate(now),
 			}
-			idToken, err := jwt.Signed(signer).Claims(claims).Claims(userClaims).CompactSerialize()
+			idToken, err := jwt.Signed(signer).Claims(claims).Claims(userClaims).Serialize()
 			if err != nil {
 				http.Error(w, "jwt error", http.StatusInternalServerError)
 				return
