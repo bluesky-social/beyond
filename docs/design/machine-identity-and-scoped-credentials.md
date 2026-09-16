@@ -1,4 +1,4 @@
-# Machine identity and scoped credentials
+# Machine identity and scoped credentials 🤖
 
 Status: proposal
 
