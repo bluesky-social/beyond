@@ -114,6 +114,10 @@ docker run --rm \
 
 beyond serves plain HTTP unless you hand it a cert with `BEYOND_TLS_CERT`/`BEYOND_TLS_KEY` — terminate TLS at your load balancer or mount a cert. Run `beyond serve --help` for the full list of flags. The metrics/pprof server listens on `:6060` and should never be exposed publicly.
 
+## Design proposals
+
+- [Machine identity and scoped credentials](docs/design/machine-identity-and-scoped-credentials.md)
+
 ## Development
 
 You need Go, docker compose, OpenSSL, and [just](https://github.com/casey/just).
