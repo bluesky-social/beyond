@@ -39,14 +39,34 @@ func fakeAuthentikServer(t *testing.T, users map[string]bool) *httptest.Server {
 // re-resolution.
 func fakeAuthentikServerWithGroups(t *testing.T, groups ...string) *httptest.Server {
 	t.Helper()
-	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		row := authentikUserRow{IsActive: true}
-		for _, g := range groups {
-			row.GroupsObj = append(row.GroupsObj, authentikGroupName{Name: g})
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v3/core/users/":
+			row := authentikUserRow{IsActive: true}
+			for _, g := range groups {
+				row.GroupsObj = append(row.GroupsObj, authentikGroupName{Name: g})
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(authentikUserResponse{Results: []authentikUserRow{row}})
+		case "/api/v3/core/groups/":
+			rows := make([]authentikGroupRow, 0, len(groups))
+			for _, group := range groups {
+				rows = append(rows, authentikGroupRow{PK: group + "-pk", Name: group})
+			}
+			writeGroupGraphResponse(w, rows...)
+		default:
+			http.NotFound(w, r)
 		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(authentikUserResponse{Results: []authentikUserRow{row}})
 	}))
+}
+
+func writeGroupGraphResponse(w http.ResponseWriter, groups ...authentikGroupRow) {
+	var response authentikGroupListResponse
+	response.Pagination.Current = 1
+	response.Pagination.TotalPages = 1
+	response.Results = groups
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(response)
 }
 
 func TestUserValidator_ActiveUser(t *testing.T) {
@@ -187,6 +207,92 @@ func TestUserValidator_ResolveReturnsGroupNames(t *testing.T) {
 		"Resolve must return the group names from groups_obj")
 }
 
+// TestUserValidator_ResolveIncludesGroupAncestors is the recursive-membership
+// regression test. Authentik's user response contains direct groups only, so
+// Beyond must expand those groups through the group graph before authorizing.
+func TestUserValidator_ResolveIncludesGroupAncestors(t *testing.T) {
+	t.Parallel()
+	var groupRequests atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v3/core/users/":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"results": []any{map[string]any{
+					"is_active": true,
+					"groups_obj": []any{map[string]any{
+						"pk": "platform-pk", "name": "platform",
+					}},
+				}},
+			})
+		case "/api/v3/core/groups/":
+			groupRequests.Add(1)
+			assert.Equal(t, "true", r.URL.Query().Get("include_parents"))
+			assert.Equal(t, "false", r.URL.Query().Get("include_users"))
+			switch r.URL.Query().Get("page") {
+			case "1":
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"pagination": map[string]any{"current": 1, "total_pages": 2},
+					"results": []any{
+						map[string]any{"pk": "platform-pk", "name": "platform", "parents": []string{"infrastructure-pk"}},
+						map[string]any{"pk": "infrastructure-pk", "name": "infrastructure", "parents": []string{"engineering-pk"}},
+					},
+				})
+			case "2":
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"pagination": map[string]any{"current": 2, "total_pages": 2},
+					"results": []any{
+						map[string]any{"pk": "engineering-pk", "name": "engineering", "parents": []string{}},
+					},
+				})
+			default:
+				http.Error(w, "unexpected page", http.StatusBadRequest)
+			}
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	uv := NewUserValidator(srv.URL, "ignored")
+	active, groups, ok := uv.Resolve("cuducos@blueskyweb.xyz")
+	assert.True(t, active)
+	assert.True(t, ok)
+	assert.ElementsMatch(t, []string{"platform", "infrastructure", "engineering"}, groups,
+		"effective groups must include every transitive ancestor")
+
+	active, groups, ok = uv.Resolve("another@blueskyweb.xyz")
+	assert.True(t, active)
+	assert.True(t, ok)
+	assert.ElementsMatch(t, []string{"platform", "infrastructure", "engineering"}, groups)
+	assert.Equal(t, int32(2), groupRequests.Load(), "the complete group graph must be shared across user lookups")
+}
+
+func TestUserValidator_GroupGraphErrorFailsClosed(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v3/core/users/":
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(authentikUserResponse{Results: []authentikUserRow{{
+				IsActive:  true,
+				GroupsObj: []authentikGroupName{{Name: "platform"}},
+			}}})
+		case "/api/v3/core/groups/":
+			http.Error(w, "unavailable", http.StatusServiceUnavailable)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	uv := NewUserValidator(srv.URL, "ignored")
+	active, groups, ok := uv.Resolve("alice@example.com")
+	assert.False(t, active, "authorization must fail closed when effective membership cannot be resolved")
+	assert.False(t, ok)
+	assert.Nil(t, groups)
+}
+
 // TestUserValidator_ResolveActiveNoGroups is the PR-review regression test: an
 // active user with zero groups must resolve as (active, empty, ok), NOT as the
 // (false, nil) shape used for API errors — so the cookie path honors the empty
@@ -207,13 +313,23 @@ func TestUserValidator_ResolveActiveNoGroups(t *testing.T) {
 // maps to multiple active accounts, Resolve returns the UNION of their groups.
 func TestUserValidator_ResolveUnionsDuplicateEmailGroups(t *testing.T) {
 	t.Parallel()
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		resp := authentikUserResponse{Results: []authentikUserRow{
-			{IsActive: true, GroupsObj: []authentikGroupName{{Name: "engineering"}}},
-			{IsActive: true, GroupsObj: []authentikGroupName{{Name: "platform"}, {Name: "engineering"}}},
-		}}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(resp)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v3/core/users/":
+			resp := authentikUserResponse{Results: []authentikUserRow{
+				{IsActive: true, GroupsObj: []authentikGroupName{{Name: "engineering"}}},
+				{IsActive: true, GroupsObj: []authentikGroupName{{Name: "platform"}, {Name: "engineering"}}},
+			}}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(resp)
+		case "/api/v3/core/groups/":
+			writeGroupGraphResponse(w,
+				authentikGroupRow{PK: "engineering-pk", Name: "engineering"},
+				authentikGroupRow{PK: "platform-pk", Name: "platform"},
+			)
+		default:
+			http.NotFound(w, r)
+		}
 	}))
 	defer srv.Close()
 

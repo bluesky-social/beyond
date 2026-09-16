@@ -629,13 +629,7 @@ func TestHandler_ActiveUser_PassesThrough(t *testing.T) {
 	// Fake Authentik: alice is active and in the allowed "engineering" group
 	// (the re-resolved set now drives the decision, so it must reflect her
 	// real membership).
-	authentikSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		resp := authentikUserResponse{
-			Results: []authentikUserRow{{IsActive: true, GroupsObj: []authentikGroupName{{Name: "engineering"}}}},
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(resp)
-	}))
+	authentikSrv := fakeAuthentikServerWithGroups(t, "engineering")
 	defer authentikSrv.Close()
 
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

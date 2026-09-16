@@ -11,6 +11,8 @@ import (
 
 const userCacheTTL = 30 * time.Second
 
+const groupGraphPageSize = 100
+
 // UserValidator checks whether a user is still active in the identity provider
 // (Authentik). Results are cached in memory for userCacheTTL to avoid hitting
 // the API on every request.
@@ -22,6 +24,10 @@ type UserValidator struct {
 	mu    sync.RWMutex
 	cache map[string]cachedUser
 	stop  chan struct{}
+
+	groupMu      sync.Mutex
+	groupGraph   *authentikGroupGraph
+	groupChecked time.Time
 }
 
 type cachedUser struct {
@@ -151,6 +157,25 @@ type authentikGroupName struct {
 	Name string `json:"name"`
 }
 
+type authentikGroupListResponse struct {
+	Pagination struct {
+		Current    int `json:"current"`
+		TotalPages int `json:"total_pages"`
+	} `json:"pagination"`
+	Results []authentikGroupRow `json:"results"`
+}
+
+type authentikGroupRow struct {
+	PK      string   `json:"pk"`
+	Name    string   `json:"name"`
+	Parents []string `json:"parents"`
+}
+
+type authentikGroupGraph struct {
+	byPK   map[string]authentikGroupRow
+	byName map[string]string
+}
+
 // queryAuthentik checks the Authentik API for whether a user is active and
 // returns the user's current group names plus an ok flag. ok is false ONLY on
 // a transient/API error (network, non-200, decode failure) — a fail-closed
@@ -198,8 +223,8 @@ func (uv *UserValidator) queryAuthentik(email string) (active bool, groups []str
 		}
 	}
 
-	// Union the group names across all matching active accounts. With a single
-	// account (the norm) this is just that account's groups. The union is the
+	// Union the direct group names across all matching active accounts. With a
+	// single account (the norm) this is just that account's groups. The union is the
 	// pragmatic choice for the rare duplicate-email case until identity is
 	// keyed on a unique sub (see beyond-cr-followups): an intersection could
 	// strip a legitimate user's access, while the deactivation gate above
@@ -213,8 +238,136 @@ func (uv *UserValidator) queryAuthentik(email string) (active bool, groups []str
 			}
 		}
 	}
+
+	// groups_obj contains direct memberships only. Expand them through the
+	// separately cached group graph so policy checks use Authentik's effective
+	// membership semantics (the same semantics as request.user.all_groups()).
+	if len(groups) > 0 {
+		groups, err = uv.expandGroupAncestors(groups)
+		if err != nil {
+			return false, nil, false
+		}
+	}
+
 	// active with ok=true; groups may be empty for a user removed from every
 	// group — the caller must honor that empty set, not fall back to stale
 	// session groups.
 	return true, groups, true
+}
+
+// expandGroupAncestors returns direct groups plus every transitive parent.
+// Authentik prevents parent cycles, but seenPK also makes expansion safe if a
+// malformed graph reaches us.
+func (uv *UserValidator) expandGroupAncestors(direct []string) ([]string, error) {
+	graph, err := uv.loadGroupGraph()
+	if err != nil {
+		return nil, err
+	}
+
+	groups := make([]string, 0, len(direct))
+	seenPK := make(map[string]bool)
+	for _, name := range direct {
+		pk, found := graph.byName[name]
+		if !found {
+			return nil, fmt.Errorf("direct group %q missing from Authentik group graph", name)
+		}
+
+		stack := []string{pk}
+		for len(stack) > 0 {
+			last := len(stack) - 1
+			currentPK := stack[last]
+			stack = stack[:last]
+			if seenPK[currentPK] {
+				continue
+			}
+			seenPK[currentPK] = true
+
+			group, found := graph.byPK[currentPK]
+			if !found {
+				return nil, fmt.Errorf("group %q missing from Authentik group graph", currentPK)
+			}
+			groups = append(groups, group.Name)
+			stack = append(stack, group.Parents...)
+		}
+	}
+	return groups, nil
+}
+
+// loadGroupGraph returns a complete group graph cached for the same short TTL
+// as user membership. Holding groupMu across refresh prevents a cache-miss
+// stampede when many user entries expire together.
+func (uv *UserValidator) loadGroupGraph() (*authentikGroupGraph, error) {
+	uv.groupMu.Lock()
+	defer uv.groupMu.Unlock()
+
+	if uv.groupGraph != nil && time.Since(uv.groupChecked) < userCacheTTL {
+		return uv.groupGraph, nil
+	}
+
+	graph := &authentikGroupGraph{
+		byPK:   make(map[string]authentikGroupRow),
+		byName: make(map[string]string),
+	}
+	for page := 1; ; page++ {
+		reqURL := fmt.Sprintf("%s/api/v3/core/groups/?include_parents=true&include_users=false&page_size=%d&page=%d", uv.apiURL, groupGraphPageSize, page)
+		req, err := http.NewRequest(http.MethodGet, reqURL, nil)
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Authorization", "Bearer "+uv.token)
+
+		resp, err := uv.client.Do(req)
+		if err != nil {
+			return nil, err
+		}
+		if resp.StatusCode != http.StatusOK {
+			_ = resp.Body.Close()
+			return nil, fmt.Errorf("authentik group list returned HTTP %d", resp.StatusCode)
+		}
+
+		var result authentikGroupListResponse
+		decodeErr := json.NewDecoder(resp.Body).Decode(&result)
+		closeErr := resp.Body.Close()
+		if decodeErr != nil {
+			return nil, decodeErr
+		}
+		if closeErr != nil {
+			return nil, closeErr
+		}
+		if result.Pagination.Current != page || result.Pagination.TotalPages < page {
+			return nil, fmt.Errorf("invalid Authentik group pagination: page %d of %d", result.Pagination.Current, result.Pagination.TotalPages)
+		}
+
+		for _, group := range result.Results {
+			if group.PK == "" || group.Name == "" {
+				return nil, fmt.Errorf("authentik group graph contains an empty pk or name")
+			}
+			if existing, found := graph.byPK[group.PK]; found && existing.Name != group.Name {
+				return nil, fmt.Errorf("authentik group pk %q has conflicting names", group.PK)
+			}
+			if existingPK, found := graph.byName[group.Name]; found && existingPK != group.PK {
+				return nil, fmt.Errorf("authentik group name %q has conflicting pks", group.Name)
+			}
+			graph.byPK[group.PK] = group
+			graph.byName[group.Name] = group.PK
+		}
+
+		if page == result.Pagination.TotalPages {
+			break
+		}
+	}
+
+	// An incomplete graph would silently drop inherited access. Treat it as an
+	// API failure instead so the existing active gate fails closed.
+	for _, group := range graph.byPK {
+		for _, parentPK := range group.Parents {
+			if _, found := graph.byPK[parentPK]; !found {
+				return nil, fmt.Errorf("parent group %q missing from Authentik group graph", parentPK)
+			}
+		}
+	}
+
+	uv.groupGraph = graph
+	uv.groupChecked = time.Now()
+	return graph, nil
 }
