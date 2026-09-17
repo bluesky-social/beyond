@@ -53,6 +53,7 @@ type Handler struct {
 	authorizer   *Authorizer
 	proxies      *ProxyPool
 	accessLog    *AccessLogger
+	logger       *slog.Logger
 	oidcAuth     *OIDCAuth // nil if OIDC not configured
 	mu           sync.RWMutex
 	httpLifetime time.Duration
@@ -92,11 +93,16 @@ type Handler struct {
 // NewHandler creates a Handler wired to the provided session manager and access
 // logger. It builds its own Authorizer and ProxyPool from cfg.
 func NewHandler(cfg *Config, sessions *SessionManager, accessLog *AccessLogger) *Handler {
+	logger := slog.Default()
+	if accessLog != nil && accessLog.Logger != nil {
+		logger = accessLog.Logger
+	}
 	h := &Handler{
 		sessions:          sessions,
 		authorizer:        NewAuthorizer(cfg),
 		proxies:           NewProxyPool(),
 		accessLog:         accessLog,
+		logger:            logger,
 		httpLifetime:      cfg.Sessions.HTTPLifetime,
 		portal:            clonePortalConfig(cfg.Portal),
 		oidcLimiter:       newIPRateLimiter(oidcRateLimit, time.Minute),
@@ -501,7 +507,7 @@ func (h *Handler) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 	identity, err := h.oidcAuth.HandleCallback(r.Context(), w, r, state, verifier, nonce, redirectURL)
 	if err != nil {
 		oidcCallbackDuration.WithLabelValues("error").Observe(time.Since(start).Seconds())
-		slog.Error("OIDC callback failed", "error", err)
+		h.logger.Error("OIDC callback failed", "error", err)
 		beyondResponse(w, "authentication failed", http.StatusForbidden)
 		return
 	}

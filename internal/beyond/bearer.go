@@ -81,7 +81,7 @@ func (h *Handler) handleBearer(w http.ResponseWriter, r *http.Request, app *Appl
 		// The host metric label must come from config, never from the
 		// attacker-controlled Host header: a flood of random Hosts would
 		// otherwise mint unbounded Prometheus time series (cardinality
-		// DoS). The access-log entry keeps the raw host — Postgres rows
+		// DoS). The access-log entry keeps the raw host — ClickHouse rows
 		// are bounded, label sets are not.
 		metricHost := "unknown"
 		if app != nil {

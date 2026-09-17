@@ -1,39 +1,27 @@
 package beyond
 
 import (
-	"database/sql"
-	"fmt"
+	"context"
 	"log/slog"
-	"strings"
 	"sync"
 	"time"
-
-	"github.com/lib/pq"
 )
 
 const (
-	batchSize     = 100
-	flushInterval = 5 * time.Second
+	// Larger batches avoid producing many tiny ClickHouse parts under load.
+	batchSize           = 1_000
+	flushInterval       = 5 * time.Second
+	writeTimeout        = 10 * time.Second
+	retryCooldown       = 5 * time.Second
+	overflowLogInterval = time.Minute
 
-	// maxBufferedEntries caps the in-memory batch (pending + re-enqueued
-	// failed entries). The audit trail is beyond's primary access-logging
-	// mechanism, so a transient DB blip must not lose entries: a failed batch
-	// is re-enqueued and retried by the next flush. But the buffer cannot grow
-	// without bound during a sustained outage — that would OOM the proxy and
-	// take down request serving (a worse failure than losing audit rows). When
-	// the buffer is full we drop the OLDEST entries and increment
-	// accessLogDroppedEntries so the loss is alertable. Sized to bound memory
-	// at roughly maxBufferedEntries * sizeof(entry) ~ a few MB.
+	// This bounds proxy memory during a sustained ClickHouse outage. The
+	// oldest entries are dropped and an alertable metric is incremented.
 	maxBufferedEntries = 50_000
 )
 
 // AccessLogEntry holds structured data for a single access log event.
 type AccessLogEntry struct {
-	// Timestamp is the event time, captured in-process when the entry is
-	// logged. It is set by Log() if unset. Persisting it explicitly (rather
-	// than relying on the column's DEFAULT now(), which evaluates at flush
-	// time) keeps the true event time and preserves intra-batch ordering — a
-	// whole batch would otherwise share one identical flush-time timestamp.
 	Timestamp  time.Time
 	Decision   string
 	UserEmail  string
@@ -52,39 +40,45 @@ type AccessLogEntry struct {
 	Error      string
 }
 
-// typedEntry couples an AccessLogEntry with its event type for batch storage.
-type typedEntry struct {
-	typ   string
-	entry AccessLogEntry
+// AccessLogRecord couples an access-log event with its event type.
+type AccessLogRecord struct {
+	Type  string
+	Entry AccessLogEntry
 }
 
-// AccessLogger logs access events to slog immediately and batches them for DB insertion.
-// Call StartFlusher to begin periodic flushes; call Flush on shutdown.
+// AccessLogSink is the storage boundary used by AccessLogger.
+type AccessLogSink interface {
+	WriteAccessLogs(context.Context, []AccessLogRecord) error
+}
+
+// AccessLogger logs access events to slog immediately and asynchronously
+// batches them for ClickHouse. Storage I/O never runs on an HTTP request
+// goroutine.
 type AccessLogger struct {
 	Logger        *slog.Logger
-	DB            *sql.DB
-	FlushInterval time.Duration // 0 means use default (5s)
-	mu            sync.Mutex
-	batch         []typedEntry
-	stop          chan struct{}
+	Sink          AccessLogSink
+	FlushInterval time.Duration
 
-	// failingUntil suppresses synchronous (request-path) batch-size flushes
-	// after a write failure: during a DB outage the batch refills to batchSize
-	// on nearly every request, so without this each request would synchronously
-	// retry the DB — hammering it and injecting connect-timeout latency onto
-	// request serving. The periodic flusher keeps retrying off the request
-	// path. Guarded by mu.
-	failingUntil time.Time
+	mu              sync.Mutex
+	flushMu         sync.Mutex
+	batch           []AccessLogRecord
+	stop            chan struct{}
+	done            chan struct{}
+	flushNow        chan struct{}
+	stopping        bool
+	retryAfter      time.Time
+	lastOverflowLog time.Time
 }
 
-// flushFailureCooldown is how long synchronous request-path flushes are
-// suppressed after a failed write (the periodic flusher still retries).
-const flushFailureCooldown = 5 * time.Second
-
-// StartFlusher begins a background goroutine that flushes the batch to the DB
-// periodically. Call this once after construction if DB is configured.
+// StartFlusher begins the single background writer. It is safe to call more
+// than once; subsequent calls are no-ops.
 func (al *AccessLogger) StartFlusher() {
-	if al.DB == nil {
+	if al.Sink == nil {
+		return
+	}
+	al.mu.Lock()
+	if al.stop != nil {
+		al.mu.Unlock()
 		return
 	}
 	interval := al.FlushInterval
@@ -92,35 +86,55 @@ func (al *AccessLogger) StartFlusher() {
 		interval = flushInterval
 	}
 	al.stop = make(chan struct{})
+	al.done = make(chan struct{})
+	al.flushNow = make(chan struct{}, 1)
+	stop, done, flushNow := al.stop, al.done, al.flushNow
+	al.mu.Unlock()
+
 	go func() {
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
+		defer close(done)
 		for {
 			select {
 			case <-ticker.C:
 				al.Flush()
-			case <-al.stop:
+			case <-flushNow:
+				al.Flush()
+			case <-stop:
+				al.Flush()
 				return
 			}
 		}
 	}()
 }
 
-// StopFlusher stops the background flusher and performs a final flush.
+// StopFlusher stops the background writer and waits for its final flush. It is
+// idempotent, which makes repeated shutdown paths safe.
 func (al *AccessLogger) StopFlusher() {
-	if al.stop != nil {
-		close(al.stop)
+	if al.Sink == nil {
+		return
 	}
-	al.Flush()
+	al.mu.Lock()
+	if al.stop == nil {
+		al.mu.Unlock()
+		al.Flush()
+		return
+	}
+	if !al.stopping {
+		close(al.stop)
+		al.stopping = true
+	}
+	done := al.done
+	al.mu.Unlock()
+	<-done
 }
 
-// Log logs an access event to slog at debug level and, if a DB is configured,
-// queues it for batch insertion to TimescaleDB (the primary access logging mechanism).
+// Log records an access event locally and queues it for ClickHouse. Timestamp
+// is captured here, not at flush time, to preserve true event ordering.
 func (al *AccessLogger) Log(typ string, entry AccessLogEntry) {
-	// Capture event time at log time, not flush time. Callers may set it
-	// explicitly (e.g. to the request start); otherwise stamp now.
 	if entry.Timestamp.IsZero() {
-		entry.Timestamp = time.Now()
+		entry.Timestamp = time.Now().UTC()
 	}
 	al.Logger.Debug("access",
 		"type", typ,
@@ -140,128 +154,83 @@ func (al *AccessLogger) Log(typ string, entry AccessLogEntry) {
 		"session_id", entry.SessionID,
 		"error", entry.Error,
 	)
-	al.enqueue(typ, entry)
+	al.enqueue(AccessLogRecord{Type: typ, Entry: entry})
 }
 
-// Flush writes any remaining batched entries to the database.
+// Flush writes the pending queue as one ClickHouse batch.
 func (al *AccessLogger) Flush() {
-	if al.DB == nil {
+	if al.Sink == nil {
 		return
 	}
+	al.flushMu.Lock()
+	defer al.flushMu.Unlock()
 	al.mu.Lock()
 	entries := al.batch
 	al.batch = nil
 	al.mu.Unlock()
-
-	if len(entries) > 0 {
-		al.writeBatch(entries)
-	}
-}
-
-// enqueue adds an entry to the typed batch. If the batch reaches batchSize it is flushed automatically.
-func (al *AccessLogger) enqueue(typ string, entry AccessLogEntry) {
-	if al.DB == nil {
-		return
-	}
-
-	al.mu.Lock()
-	al.batch = append(al.batch, typedEntry{typ: typ, entry: entry})
-	var toFlush []typedEntry
-	// Only flush synchronously on the request path when we're at the batch
-	// threshold AND not in a post-failure cooldown. During an outage the batch
-	// stays at/above batchSize, so this guard is what keeps a slow/erroring DB
-	// from injecting latency onto every request — the periodic flusher retries
-	// instead. Cap the synchronous flush so the batch can still drain even if
-	// it has grown past batchSize via re-enqueued failures.
-	if len(al.batch) >= batchSize && time.Now().After(al.failingUntil) {
-		n := min(len(al.batch), batchSize)
-		toFlush = al.batch[:n:n]
-		al.batch = al.batch[n:]
-	}
-	al.mu.Unlock()
-
-	if toFlush != nil {
-		al.writeBatch(toFlush)
-	}
-}
-
-// writeBatch inserts a slice of typed entries into access_logs using a single
-// multi-row INSERT for efficiency.
-func (al *AccessLogger) writeBatch(entries []typedEntry) {
 	if len(entries) == 0 {
 		return
 	}
+
 	start := time.Now()
-	defer func() {
-		accessLogFlushDuration.Observe(time.Since(start).Seconds())
-		accessLogFlushSize.Observe(float64(len(entries)))
-	}()
-
-	const cols = 17
-	var b strings.Builder
-	b.WriteString(`INSERT INTO access_logs (
-		timestamp, type, decision, user_email, user_groups,
-		resource, upstream, method, path, host,
-		source_ip, user_agent, status_code, duration_ms, bytes_sent,
-		session_id, error
-	) VALUES `)
-
-	args := make([]any, 0, len(entries)*cols)
-	for i, te := range entries {
-		e := te.entry
-		// Ensure user_groups is never nil — pq.Array(nil) sends SQL NULL
-		// which violates the NOT NULL constraint.
-		if e.UserGroups == nil {
-			e.UserGroups = []string{}
-		}
-		if i > 0 {
-			b.WriteString(", ")
-		}
-		base := i * cols
-		b.WriteByte('(')
-		for j := 1; j <= cols; j++ {
-			if j > 1 {
-				b.WriteString(", ")
-			}
-			fmt.Fprintf(&b, "$%d", base+j)
-		}
-		b.WriteByte(')')
-		args = append(args,
-			e.Timestamp, te.typ, e.Decision, e.UserEmail, pq.Array(e.UserGroups),
-			e.Resource, e.Upstream, e.Method, e.Path, e.Host,
-			e.SourceIP, e.UserAgent, e.StatusCode, e.DurationMS, e.BytesSent,
-			e.SessionID, e.Error,
-		)
-	}
-
-	if _, err := al.DB.Exec(b.String(), args...); err != nil {
-		// Re-enqueue rather than drop: the audit trail is the primary access
-		// logging mechanism, and a transient DB blip (failover, pool
-		// exhaustion) must not silently destroy records for already-served
-		// requests. The next flush retries. The inline retry-with-sleep that
-		// used to live here is gone — it injected up to 100ms of latency onto
-		// the request goroutine whenever a batch-size flush failed.
+	ctx, cancel := context.WithTimeout(context.Background(), writeTimeout)
+	err := al.Sink.WriteAccessLogs(ctx, entries)
+	cancel()
+	accessLogFlushDuration.Observe(time.Since(start).Seconds())
+	accessLogFlushSize.Observe(float64(len(entries)))
+	if err != nil {
+		accessLogWriteFailures.Inc()
 		al.Logger.Error("access log batch insert failed, re-enqueued for retry", "error", err, "count", len(entries))
 		al.requeue(entries)
 	}
 }
 
-// requeue prepends a failed batch back onto the pending batch so the next
-// flush retries it (failed entries are older, so they go first to preserve
-// rough ordering). The combined buffer is capped at maxBufferedEntries: under
-// a sustained DB outage we drop the OLDEST entries and increment
-// accessLogDroppedEntries rather than growing memory without bound and OOMing
-// the proxy. Dropping is the explicit, alertable fallback — never silent.
-func (al *AccessLogger) requeue(failed []typedEntry) {
+func (al *AccessLogger) enqueue(record AccessLogRecord) {
+	if al.Sink == nil {
+		return
+	}
+	al.mu.Lock()
+	al.batch = append(al.batch, record)
+	dropped := max(0, len(al.batch)-maxBufferedEntries)
+	shouldLogOverflow := false
+	if dropped > 0 {
+		al.batch = al.batch[dropped:]
+		now := time.Now()
+		if now.Sub(al.lastOverflowLog) >= overflowLogInterval {
+			al.lastOverflowLog = now
+			shouldLogOverflow = true
+		}
+	}
+	shouldFlush := len(al.batch) >= batchSize && al.flushNow != nil && time.Now().After(al.retryAfter)
+	flushNow := al.flushNow
+	al.mu.Unlock()
+	if dropped > 0 {
+		accessLogDroppedEntries.Add(float64(dropped))
+		if shouldLogOverflow {
+			al.Logger.Error("access log retry buffer full, dropping oldest entries",
+				"dropped", dropped, "buffer_cap", maxBufferedEntries)
+		}
+	}
+
+	if shouldFlush {
+		select {
+		case flushNow <- struct{}{}:
+		default:
+		}
+	}
+}
+
+// requeue prepends a failed batch so older records retry first. If the bounded
+// queue overflows, the oldest records are dropped explicitly and observably.
+func (al *AccessLogger) requeue(failed []AccessLogRecord) {
 	al.mu.Lock()
 	defer al.mu.Unlock()
 
-	al.failingUntil = time.Now().Add(flushFailureCooldown)
-
+	al.retryAfter = time.Now().Add(retryCooldown)
 	combined := append(failed, al.batch...)
 	if len(combined) > maxBufferedEntries {
 		dropped := len(combined) - maxBufferedEntries
-		combined = combined[dropped:] // drop oldest
+		combined = combined[dropped:]
 		accessLogDroppedEntries.Add(float64(dropped))
 		al.Logger.Error("access log retry buffer full, dropped oldest entries",
 			"dropped", dropped, "buffer_cap", maxBufferedEntries)

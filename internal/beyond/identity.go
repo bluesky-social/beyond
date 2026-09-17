@@ -46,7 +46,7 @@ type Identity struct {
 //  3. Log-line width. Truncating early keeps individual log lines bounded
 //     even if an IdP misbehaves. (Note: truncation bounds VALUE WIDTH, not
 //     metric-label CARDINALITY — which is why user identity is never a
-//     Prometheus label; per-user data lives in bounded access_logs rows.)
+//     Prometheus label; per-user data lives in bounded ClickHouse rows.)
 //
 // Values are chosen generously — a real human name easily fits in 256
 // bytes, RFC 5321 caps email at 254 bytes, 128 bytes is far more than any

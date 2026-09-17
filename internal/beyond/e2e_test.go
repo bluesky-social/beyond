@@ -69,10 +69,8 @@ func beyondServer(t *testing.T) *httptest.Server {
 
 	logger := slog.New(slog.NewJSONHandler(&bytes.Buffer{}, nil))
 	accessLog := &AccessLogger{Logger: logger}
-	if os.Getenv("BEYOND_DB_URL") != "" {
-		// Reuse the shared DB migration from ensureDB.
-		db := ensureDB(t)
-		accessLog.DB = db
+	if os.Getenv("BEYOND_CLICKHOUSE_URL") != "" {
+		accessLog.Sink = ensureClickHouse(t)
 	}
 
 	cfg := &Config{
@@ -665,12 +663,12 @@ func TestE2E_UnknownHost(t *testing.T) {
 
 func TestE2E_AccessLogsWrittenToDB(t *testing.T) {
 	t.Parallel()
-	db := ensureDB(t)
+	store := ensureClickHouse(t)
 
 	sm, err := NewSessionManager([][]byte{[]byte("0123456789abcdef0123456789abcdef")}, 12*time.Hour)
 	require.NoError(t, err)
 
-	accessLog := &AccessLogger{Logger: testLogger(), DB: db}
+	accessLog := &AccessLogger{Logger: testLogger(), Sink: store}
 
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte("ok"))
@@ -711,8 +709,9 @@ func TestE2E_AccessLogsWrittenToDB(t *testing.T) {
 
 	accessLog.Flush()
 
-	var count int
-	err = db.QueryRow("SELECT count(*) FROM access_logs WHERE user_email = 'logtest@beyond.local'").Scan(&count)
+	var count uint64
+	err = store.conn.QueryRow(context.Background(),
+		"SELECT count() FROM access_logs WHERE user_email = 'logtest@beyond.local'").Scan(&count)
 	require.NoError(t, err)
-	assert.GreaterOrEqual(t, count, 1, "should have at least one access log entry")
+	assert.GreaterOrEqual(t, count, uint64(1), "should have at least one access log entry")
 }

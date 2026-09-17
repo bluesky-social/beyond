@@ -17,10 +17,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 	jose "github.com/go-jose/go-jose/v4"
 	"github.com/go-jose/go-jose/v4/jwt"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // mockSingleUseOIDCProvider is like mockOIDCProviderWithClaims but enforces
@@ -249,7 +249,7 @@ func newMintTestHandler(t *testing.T, fa *fakeAuthentikAPI, allowedGroups []stri
 	if logBuf == nil {
 		logBuf = io.Discard
 	}
-	al := &AccessLogger{Logger: slog.New(slog.NewJSONHandler(io.Discard, nil))}
+	al := &AccessLogger{Logger: slog.New(slog.NewJSONHandler(logBuf, nil))}
 	h := NewHandler(cfg, sm, al)
 
 	mintAuth, err := NewMintOIDCAuth(context.Background(), OIDCConfig{
@@ -270,13 +270,6 @@ func newMintTestHandler(t *testing.T, fa *fakeAuthentikAPI, allowedGroups []stri
 	})
 	require.NoError(t, err)
 	h.SetOIDCAuth(loginAuth)
-
-	// Redirect the package slog default so no-secret-in-logs tests can capture.
-	if logBuf != io.Discard {
-		prev := slog.Default()
-		slog.SetDefault(slog.New(slog.NewTextHandler(logBuf, nil)))
-		t.Cleanup(func() { slog.SetDefault(prev) })
-	}
 
 	return h
 }
@@ -635,10 +628,10 @@ func TestMint_ReMintRevokesOldKeys(t *testing.T) {
 	newAigwID := "beyond-mint-aigw-" + strings.Repeat("b", 32)
 	gcxID := "beyond-mint-gcx-" + strings.Repeat("c", 32)
 	fa.existing = []string{
-		legacyAigwID,        // legacy aigw key — must be reaped when purpose == aigw
-		newAigwID,           // new-format aigw key — must be reaped
-		gcxID,               // gcx key — different purpose, must be preserved
-		"my-own-cli-token",  // hand-made token (no beyond-mint prefix) — must be preserved
+		legacyAigwID,       // legacy aigw key — must be reaped when purpose == aigw
+		newAigwID,          // new-format aigw key — must be reaped
+		gcxID,              // gcx key — different purpose, must be preserved
+		"my-own-cli-token", // hand-made token (no beyond-mint prefix) — must be preserved
 	}
 	claims := mintClaims([]string{"platform"})
 	h := newMintTestHandler(t, fa, []string{"platform"}, claims, nil)
@@ -1021,7 +1014,7 @@ func TestMint_PurposeInvalidReturns400WithInlineError(t *testing.T) {
 		purpose string
 	}{
 		{"starts with hyphen", "-bad"},
-		{"underscore", "my_key"},   // underscore is not in [a-z0-9-] even after lowercase
+		{"underscore", "my_key"}, // underscore is not in [a-z0-9-] even after lowercase
 		{"space", "my key"},
 		{"too long", strings.Repeat("a", 33)},
 		{"special char", "my/key"},

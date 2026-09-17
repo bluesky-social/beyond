@@ -6,7 +6,7 @@ Zero-trust network access (ZTNA) HTTP(s) reverse proxy.
 
 ```bash
 just install-tools  # one-time: install golangci-lint + gotestsum
-just up             # start dev stack (Authentik, Postgres, echo server)
+just up             # start dev stack (Authentik, Postgres, ClickHouse, echo server)
 just down           # tear down dev stack
 ```
 
@@ -20,8 +20,8 @@ just test-race                        # with race detector
 just build                            # all binaries → ./bin/
 ```
 
-Unit tests run without infrastructure. E2E tests and DB tests require the
-dev stack (`just up`) and `BEYOND_DB_URL` set in `.env`; they self-skip
+Unit tests run without infrastructure. E2E tests and ClickHouse tests require the
+dev stack (`just up`) and `BEYOND_CLICKHOUSE_URL` set in `.env`; they self-skip
 when the stack isn't running.
 
 The metrics/pprof server listens on `:6060` (separate from the main proxy

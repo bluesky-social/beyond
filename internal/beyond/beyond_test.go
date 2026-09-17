@@ -3,7 +3,9 @@ package beyond
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -63,12 +65,12 @@ func TestGracefulShutdown_DrainsBeforeStoppingFlusher(t *testing.T) {
 // draining (modeled by srv.Shutdown's callback) is still present in the batch
 // when StopFlusher's final flush runs.
 func TestGracefulShutdown_PersistsEntryEnqueuedDuringDrain(t *testing.T) {
-	db := ensureDB(t)
+	store := ensureClickHouse(t)
 
-	al := &AccessLogger{Logger: testLogger(), DB: db}
+	al := &AccessLogger{Logger: testLogger(), Sink: store}
 	al.StartFlusher()
 
-	const marker = "drain-boundary@beyond.local"
+	marker := fmt.Sprintf("drain-boundary-%d@beyond.local", time.Now().UnixNano())
 
 	// Model an in-flight request that finishes (and logs) DURING the drain.
 	srv := &recordingShutdowner{
@@ -88,10 +90,11 @@ func TestGracefulShutdown_PersistsEntryEnqueuedDuringDrain(t *testing.T) {
 
 	require.NoError(t, gracefulShutdown(context.Background(), srv, debugSrv, al))
 
-	var count int
-	err := db.QueryRow(`SELECT COUNT(*) FROM access_logs WHERE user_email = $1`, marker).Scan(&count)
+	var count uint64
+	err := store.conn.QueryRow(context.Background(),
+		`SELECT count() FROM access_logs WHERE user_email = ?`, marker).Scan(&count)
 	require.NoError(t, err)
-	assert.Equal(t, 1, count,
+	assert.Equal(t, uint64(1), count,
 		"entry enqueued during the drain must be persisted by the flusher's final flush")
 }
 

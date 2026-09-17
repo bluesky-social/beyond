@@ -12,7 +12,6 @@ import (
 	"strings"
 	"time"
 
-	_ "github.com/lib/pq"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/urfave/cli/v3"
 )
@@ -49,7 +48,7 @@ func newServeCmd(configPath *string) *cli.Command {
 		metricsListen     string
 		tlsCert           string
 		tlsKey            string
-		dbURL             string
+		clickhouseURL     string
 		oidcIssuer        string
 		oidcClientID      string
 		oidcClientSecret  string
@@ -90,10 +89,10 @@ func newServeCmd(configPath *string) *cli.Command {
 				Destination: &tlsKey,
 			},
 			&cli.StringFlag{
-				Name:        "db-url",
-				Usage:       "PostgreSQL/Timescale connection URL",
-				Sources:     cli.EnvVars("BEYOND_DB_URL"),
-				Destination: &dbURL,
+				Name:        "clickhouse-url",
+				Usage:       "ClickHouse connection URL for access logs",
+				Sources:     cli.EnvVars("BEYOND_CLICKHOUSE_URL"),
+				Destination: &clickhouseURL,
 			},
 			&cli.StringFlag{
 				Name:        "oidc-issuer",
@@ -181,23 +180,22 @@ func newServeCmd(configPath *string) *cli.Command {
 				return fmt.Errorf("creating session manager: %w", err)
 			}
 
-			// Open PostgreSQL if --db-url is provided.
-			sqlDB, err := OpenDB(dbURL)
+			if clickhouseURL == "" {
+				return fmt.Errorf("--clickhouse-url is required")
+			}
+
+			// ClickHouse is the durable access-log store. Schema creation is
+			// idempotent, so every replica can safely initialize at startup.
+			accessLogStore, err := OpenClickHouseAccessLogStore(ctx, clickhouseURL)
 			if err != nil {
-				return fmt.Errorf("opening database: %w", err)
+				return fmt.Errorf("opening access-log store: %w", err)
 			}
-			defer func() { _ = sqlDB.Close() }()
+			defer func() { _ = accessLogStore.Close() }()
 
-			sqlDB.SetMaxOpenConns(25)
-			sqlDB.SetMaxIdleConns(5)
-			sqlDB.SetConnMaxLifetime(5 * time.Minute)
-
-			if err := RunBeyondMigrations(sqlDB); err != nil {
-				return fmt.Errorf("running migrations: %w", err)
-			}
-			accessLog := &AccessLogger{Logger: logger, DB: sqlDB}
+			accessLog := &AccessLogger{Logger: logger, Sink: accessLogStore}
 			accessLog.StartFlusher()
-			logger.Info("database connected and migrations applied")
+			logger.Info("ClickHouse connected and access-log schema initialized",
+				"retention_days", accessLogRetentionDays)
 
 			// Create Handler.
 			handler := NewHandler(cfg, sm, accessLog)

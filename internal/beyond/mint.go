@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"html/template"
 	"io"
-	"log/slog"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -473,7 +472,7 @@ func (h *Handler) handleMintCallback(w http.ResponseWriter, r *http.Request, app
 		// Bad state, exchange failure, id_token/nonce failure, or unusable
 		// claims. No Authentik write has happened. Log server-side only.
 		mintOperations.WithLabelValues("error").Inc()
-		slog.Error("mint callback failed", "error", err)
+		h.logger.Error("mint callback failed", "error", err)
 		h.mintLog(r, app, start, "deny", http.StatusForbidden, "callback auth failed")
 		h.renderMintError(w, r, app, "Authentication failed. Start again to mint a key.", http.StatusForbidden)
 		return
@@ -598,7 +597,7 @@ func (h *Handler) doMint(w http.ResponseWriter, r *http.Request, app *Applicatio
 	// Log the token identifier (NOT the key) so the residual client-disconnect
 	// orphan window is recoverable: if the page didn't finish displaying, the
 	// user can revoke exactly this token.
-	slog.Info("app password minted", "identifier", identifier, "user", identity.Email)
+	h.logger.Info("app password minted", "identifier", identifier, "user", identity.Email)
 	h.mintLog(r, app, start, "allow", http.StatusOK, "")
 }
 
@@ -612,13 +611,13 @@ func (h *Handler) cleanupOrphan(w http.ResponseWriter, r *http.Request, app *App
 	delCtx, cancel := context.WithTimeout(context.Background(), mintAPITimeout)
 	defer cancel()
 	if h.deleteToken(delCtx, ma, accessToken, identifier) {
-		slog.Warn("mint: retrieving key failed; created token deleted", "identifier", identifier)
+		h.logger.Warn("mint: retrieving key failed; created token deleted", "identifier", identifier)
 		h.mintLog(r, app, start, "deny", http.StatusInternalServerError, "view_key failed; token deleted")
 		h.renderMintError(w, r, app, "Failed to retrieve the key; no key was created. Start again to retry.", http.StatusInternalServerError)
 		return
 	}
 	// Delete failed — a token may be orphaned. Log the id and tell the user.
-	slog.Error("mint: retrieving key failed AND cleanup delete failed; token may be orphaned", "identifier", identifier)
+	h.logger.Error("mint: retrieving key failed AND cleanup delete failed; token may be orphaned", "identifier", identifier)
 	h.mintLog(r, app, start, "deny", http.StatusInternalServerError, "view_key failed; cleanup failed")
 	h.renderMintOrphanError(w, r, app, ma)
 }
@@ -653,12 +652,12 @@ func (h *Handler) createAppPassword(ctx context.Context, ma *MintAuthConfig, acc
 	}
 	payload, err := json.Marshal(body)
 	if err != nil {
-		slog.Error("mint: marshal token-create body", "error", err)
+		h.logger.Error("mint: marshal token-create body", "error", err)
 		return mintAPIUnavailable
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, mintAPIURL(ma, "/core/tokens/"), bytes.NewReader(payload))
 	if err != nil {
-		slog.Error("mint: build token-create request", "error", err)
+		h.logger.Error("mint: build token-create request", "error", err)
 		return mintAPIUnavailable
 	}
 	req.Header.Set("Content-Type", "application/json")
@@ -666,7 +665,7 @@ func (h *Handler) createAppPassword(ctx context.Context, ma *MintAuthConfig, acc
 
 	resp, err := h.mintClientDo(req)
 	if err != nil {
-		slog.Error("mint: token-create request failed", "error", err)
+		h.logger.Error("mint: token-create request failed", "error", err)
 		return mintAPIUnavailable
 	}
 	defer func() { _ = resp.Body.Close() }()
@@ -675,7 +674,7 @@ func (h *Handler) createAppPassword(ctx context.Context, ma *MintAuthConfig, acc
 	case resp.StatusCode == http.StatusCreated || resp.StatusCode == http.StatusOK:
 		return mintAPIOK
 	case resp.StatusCode >= 500:
-		slog.Error("mint: token-create 5xx", "status", resp.StatusCode)
+		h.logger.Error("mint: token-create 5xx", "status", resp.StatusCode)
 		return mintAPIUnavailable
 	case resp.StatusCode == http.StatusBadRequest:
 		// Distinguish the expiry-cap rejection so the user gets a clear message.
@@ -683,10 +682,10 @@ func (h *Handler) createAppPassword(ctx context.Context, ma *MintAuthConfig, acc
 		if strings.Contains(strings.ToLower(string(b)), "maximum lifetime") {
 			return mintAPICapExceeded
 		}
-		slog.Error("mint: token-create 400", "body_len", len(b))
+		h.logger.Error("mint: token-create 400", "body_len", len(b))
 		return mintAPIRejected
 	default:
-		slog.Error("mint: token-create rejected", "status", resp.StatusCode)
+		h.logger.Error("mint: token-create rejected", "status", resp.StatusCode)
 		return mintAPIRejected
 	}
 }
@@ -702,29 +701,29 @@ func (h *Handler) viewKey(ctx context.Context, ma *MintAuthConfig, accessToken, 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
 		mintAPIURL(ma, "/core/tokens/"+url.PathEscape(identifier)+"/view_key/"), nil)
 	if err != nil {
-		slog.Error("mint: build view_key request", "error", err)
+		h.logger.Error("mint: build view_key request", "error", err)
 		return "", false
 	}
 	req.Header.Set("Authorization", "Bearer "+accessToken)
 
 	resp, err := h.mintClientDo(req)
 	if err != nil {
-		slog.Error("mint: view_key request failed", "error", err)
+		h.logger.Error("mint: view_key request failed", "error", err)
 		return "", false
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
-		slog.Error("mint: view_key non-200", "status", resp.StatusCode)
+		h.logger.Error("mint: view_key non-200", "status", resp.StatusCode)
 		return "", false
 	}
 	b, err := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
 	if err != nil {
-		slog.Error("mint: read view_key body", "error", err)
+		h.logger.Error("mint: read view_key body", "error", err)
 		return "", false
 	}
 	var vr viewKeyResponse
 	if err := json.Unmarshal(b, &vr); err != nil || vr.Key == "" {
-		slog.Error("mint: decode view_key body", "error", err)
+		h.logger.Error("mint: decode view_key body", "error", err)
 		return "", false
 	}
 	return vr.Key, true
@@ -736,14 +735,14 @@ func (h *Handler) deleteToken(ctx context.Context, ma *MintAuthConfig, accessTok
 	req, err := http.NewRequestWithContext(ctx, http.MethodDelete,
 		mintAPIURL(ma, "/core/tokens/"+url.PathEscape(identifier)+"/"), nil)
 	if err != nil {
-		slog.Error("mint: build delete request", "error", err)
+		h.logger.Error("mint: build delete request", "error", err)
 		return false
 	}
 	req.Header.Set("Authorization", "Bearer "+accessToken)
 
 	resp, err := h.mintClientDo(req)
 	if err != nil {
-		slog.Error("mint: delete request failed", "error", err)
+		h.logger.Error("mint: delete request failed", "error", err)
 		return false
 	}
 	defer func() { _ = resp.Body.Close() }()
@@ -807,28 +806,28 @@ func (h *Handler) revokeOldMintTokens(ctx context.Context, ma *MintAuthConfig, a
 	listURL := mintAPIURL(ma, "/core/tokens/?intent=app_password&page_size=100&user__username="+url.QueryEscape(owner.Email))
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, listURL, nil)
 	if err != nil {
-		slog.Error("mint: build token-list request", "error", err)
+		h.logger.Error("mint: build token-list request", "error", err)
 		return
 	}
 	req.Header.Set("Authorization", "Bearer "+accessToken)
 	resp, err := h.mintClientDo(req)
 	if err != nil {
-		slog.Error("mint: token-list request failed", "error", err)
+		h.logger.Error("mint: token-list request failed", "error", err)
 		return
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
-		slog.Error("mint: token-list non-200", "status", resp.StatusCode)
+		h.logger.Error("mint: token-list non-200", "status", resp.StatusCode)
 		return
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
-		slog.Error("mint: read token-list body", "error", err)
+		h.logger.Error("mint: read token-list body", "error", err)
 		return
 	}
 	var list mintTokenList
 	if err := json.Unmarshal(body, &list); err != nil {
-		slog.Error("mint: decode token-list body", "error", err)
+		h.logger.Error("mint: decode token-list body", "error", err)
 		return
 	}
 	revoked := 0
@@ -840,7 +839,7 @@ func (h *Handler) revokeOldMintTokens(ctx context.Context, ma *MintAuthConfig, a
 		// the API attributes to someone else, regardless of what the list
 		// query returned. Usernames are full emails for our users.
 		if tok.UserObj.Username != owner.Email {
-			slog.Warn("mint: sweep skipped foreign-owned token",
+			h.logger.Warn("mint: sweep skipped foreign-owned token",
 				"identifier", tok.Identifier, "owner", tok.UserObj.Username, "caller", owner.Email)
 			continue
 		}
@@ -855,7 +854,7 @@ func (h *Handler) revokeOldMintTokens(ctx context.Context, ma *MintAuthConfig, a
 		}
 	}
 	if revoked > 0 {
-		slog.Info("mint: revoked superseded access keys", "count", revoked, "purpose", purpose)
+		h.logger.Info("mint: revoked superseded access keys", "count", revoked, "purpose", purpose)
 	}
 }
 
