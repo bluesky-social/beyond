@@ -194,6 +194,16 @@ func newServeCmd(configPath *string) *cli.Command {
 
 			accessLog := &AccessLogger{Logger: logger, Sink: accessLogStore}
 			accessLog.StartFlusher()
+			// StopFlusher is idempotent (gracefulShutdown also calls it); this
+			// defer guarantees the writer is stopped before the store Close
+			// defer above runs on any early startup-error return path. Those
+			// paths have queued no access logs, so the drain returns at once;
+			// the bounded context is a backstop, never a real shutdown wait.
+			defer func() {
+				stopCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer cancel()
+				accessLog.StopFlusher(stopCtx)
+			}()
 			logger.Info("ClickHouse connected and access-log schema initialized",
 				"retention_days", accessLogRetentionDays)
 
@@ -359,7 +369,7 @@ type serverShutdowner interface {
 
 // flusherStopper is the subset of *AccessLogger that gracefulShutdown needs.
 type flusherStopper interface {
-	StopFlusher()
+	StopFlusher(ctx context.Context)
 }
 
 // gracefulShutdown drains the main proxy server, THEN the metrics server, and
@@ -376,7 +386,7 @@ func gracefulShutdown(ctx context.Context, srv, debugSrv serverShutdowner, acces
 	if err := srv.Shutdown(ctx); err != nil {
 		return fmt.Errorf("server shutdown: %w", err)
 	}
-	accessLog.StopFlusher()
+	accessLog.StopFlusher(ctx)
 
 	if err := debugSrv.Shutdown(ctx); err != nil {
 		return fmt.Errorf("metrics server shutdown: %w", err)

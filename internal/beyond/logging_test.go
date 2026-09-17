@@ -19,18 +19,25 @@ func testLogger() *slog.Logger {
 }
 
 type recordingAccessLogSink struct {
-	mu      sync.Mutex
-	records []AccessLogRecord
-	calls   int
-	err     error
-	entered chan struct{}
-	release chan struct{}
+	mu        sync.Mutex
+	records   []AccessLogRecord
+	calls     int
+	err       error
+	failFirst int // fail this many initial calls with errTransient, then succeed
+	entered   chan struct{}
+	release   chan struct{}
 }
+
+var errTransient = errors.New("transient sink failure")
 
 func (s *recordingAccessLogSink) WriteAccessLogs(ctx context.Context, records []AccessLogRecord) error {
 	s.mu.Lock()
 	s.calls++
 	err := s.err
+	if s.failFirst > 0 {
+		s.failFirst--
+		err = errTransient
+	}
 	entered, release := s.entered, s.release
 	if err == nil {
 		s.records = append(s.records, append([]AccessLogRecord(nil), records...)...)
@@ -88,7 +95,7 @@ func TestAccessLoggerAutoFlush(t *testing.T) {
 	sink := &recordingAccessLogSink{}
 	al := &AccessLogger{Logger: testLogger(), Sink: sink, FlushInterval: 5 * time.Millisecond}
 	al.StartFlusher()
-	defer al.StopFlusher()
+	defer al.StopFlusher(context.Background())
 	al.Log("http", AccessLogEntry{UserEmail: "autoflusher@example.com"})
 	require.Eventually(t, func() bool {
 		records, _ := sink.snapshot()
@@ -116,7 +123,7 @@ func TestAccessLoggerThresholdFlushIsOffRequestPath(t *testing.T) {
 		}
 	}, time.Second, time.Millisecond)
 	close(sink.release)
-	al.StopFlusher()
+	al.StopFlusher(context.Background())
 
 	records, calls := sink.snapshot()
 	assert.Equal(t, 1, calls)
@@ -178,10 +185,72 @@ func TestAccessLoggerFailureCooldownSuppressesRetryStorm(t *testing.T) {
 	sink.mu.Lock()
 	sink.err = nil
 	sink.mu.Unlock()
-	al.StopFlusher()
+	al.StopFlusher(context.Background())
 	records, calls := sink.snapshot()
 	assert.Equal(t, 2, calls)
 	assert.Len(t, records, batchSize+1)
+}
+
+func TestStopFlusherRetriesTransientFailureAtShutdown(t *testing.T) {
+	t.Parallel()
+	// The final flush fails twice, then ClickHouse recovers. StopFlusher must
+	// keep retrying the requeued batch until it drains rather than losing the
+	// last audit records to a transient blip at shutdown.
+	sink := &recordingAccessLogSink{failFirst: 2}
+	al := &AccessLogger{
+		Logger:                testLogger(),
+		Sink:                  sink,
+		FlushInterval:         time.Hour, // no auto-flush; StopFlusher drives it
+		ShutdownRetryInterval: 5 * time.Millisecond,
+	}
+	al.StartFlusher()
+	for range 3 {
+		al.Log("http", AccessLogEntry{UserEmail: "audit@example.com"})
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	al.StopFlusher(ctx)
+
+	records, calls := sink.snapshot()
+	assert.Len(t, records, 3, "all queued audit records must survive a transient shutdown blip")
+	assert.GreaterOrEqual(t, calls, 3, "final flush plus at least two retries")
+	al.mu.Lock()
+	pending := len(al.batch)
+	al.mu.Unlock()
+	assert.Zero(t, pending, "batch must be fully drained")
+}
+
+func TestStopFlusherHonorsDeadlineOnPersistentFailure(t *testing.T) {
+	t.Parallel()
+	// ClickHouse stays down through shutdown. StopFlusher must stop retrying
+	// when ctx expires instead of blocking teardown indefinitely.
+	sink := &recordingAccessLogSink{err: errors.New("clickhouse down")}
+	al := &AccessLogger{
+		Logger:                testLogger(),
+		Sink:                  sink,
+		FlushInterval:         time.Hour,
+		ShutdownRetryInterval: 10 * time.Millisecond,
+	}
+	al.StartFlusher()
+	al.Log("http", AccessLogEntry{UserEmail: "audit@example.com"})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	returned := make(chan struct{})
+	go func() {
+		al.StopFlusher(ctx)
+		close(returned)
+	}()
+	select {
+	case <-returned:
+	case <-time.After(5 * time.Second):
+		t.Fatal("StopFlusher did not honor ctx deadline; it hung on a persistent outage")
+	}
+
+	records, _ := sink.snapshot()
+	assert.Empty(t, records, "no records can be written while the sink is down")
 }
 
 func TestAccessLoggerConcurrentLoggingHasNoLoss(t *testing.T) {
@@ -203,8 +272,8 @@ func TestAccessLoggerConcurrentLoggingHasNoLoss(t *testing.T) {
 		}()
 	}
 	wg.Wait()
-	al.StopFlusher()
-	al.StopFlusher()
+	al.StopFlusher(context.Background())
+	al.StopFlusher(context.Background())
 
 	records, _ := sink.snapshot()
 	assert.Len(t, records, goroutines*perGoroutine)

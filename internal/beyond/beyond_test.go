@@ -33,7 +33,7 @@ type recordingFlusher struct {
 	order *[]string
 }
 
-func (r *recordingFlusher) StopFlusher() {
+func (r *recordingFlusher) StopFlusher(context.Context) {
 	*r.order = append(*r.order, r.label)
 }
 

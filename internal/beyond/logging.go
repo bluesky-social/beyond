@@ -58,6 +58,9 @@ type AccessLogger struct {
 	Logger        *slog.Logger
 	Sink          AccessLogSink
 	FlushInterval time.Duration
+	// ShutdownRetryInterval is the cadence StopFlusher retries a failed final
+	// flush at. Zero means retryCooldown.
+	ShutdownRetryInterval time.Duration
 
 	mu              sync.Mutex
 	flushMu         sync.Mutex
@@ -109,9 +112,13 @@ func (al *AccessLogger) StartFlusher() {
 	}()
 }
 
-// StopFlusher stops the background writer and waits for its final flush. It is
+// StopFlusher stops the background writer and waits for its final flush. If
+// that final flush fails and requeues its batch, StopFlusher retries within
+// ctx so a transient ClickHouse blip at shutdown does not silently lose the
+// last audit records; a genuine outage still terminates when ctx expires
+// (bounded by the caller's shutdown deadline, never a private timer). It is
 // idempotent, which makes repeated shutdown paths safe.
-func (al *AccessLogger) StopFlusher() {
+func (al *AccessLogger) StopFlusher(ctx context.Context) {
 	if al.Sink == nil {
 		return
 	}
@@ -128,6 +135,30 @@ func (al *AccessLogger) StopFlusher() {
 	done := al.done
 	al.mu.Unlock()
 	<-done
+
+	// The writer's final flush requeues entries on write failure. Retry them
+	// on the cooldown cadence until the batch drains or ctx expires.
+	retryInterval := al.ShutdownRetryInterval
+	if retryInterval == 0 {
+		retryInterval = retryCooldown
+	}
+	for {
+		al.mu.Lock()
+		pending := len(al.batch)
+		al.mu.Unlock()
+		if pending == 0 {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			al.Logger.Error("shutdown flush deadline exceeded, dropping pending access logs",
+				"pending", pending)
+			accessLogDroppedEntries.Add(float64(pending))
+			return
+		case <-time.After(retryInterval):
+		}
+		al.Flush()
+	}
 }
 
 // Log records an access event locally and queues it for ClickHouse. Timestamp
