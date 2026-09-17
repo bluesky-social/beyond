@@ -50,6 +50,7 @@ func TestPortal_AuthenticatedUserSeesOnlyAllowedApplications(t *testing.T) {
 	assert.Contains(t, html, "Grafana")
 	assert.Contains(t, html, "Metrics and dashboards")
 	assert.Contains(t, html, `href="https://grafana.internal/"`)
+	assert.NotContains(t, html, `href="/admin/access-logs"`)
 	assert.NotContains(t, html, "Argo CD")
 	assert.NotContains(t, html, "Deployments")
 	assert.NotContains(t, html, "platform")
@@ -70,6 +71,7 @@ func TestPortal_AdminSeesAllApplicationsInStableOrder(t *testing.T) {
 
 	html := string(body)
 	assert.Less(t, len(html), 16*1024, "the portal should remain a small document")
+	assert.Contains(t, html, `href="/admin/access-logs"`)
 	assert.Less(t, stringIndex(t, html, "Argo CD"), stringIndex(t, html, "Grafana"))
 }
 

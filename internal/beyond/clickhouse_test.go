@@ -101,3 +101,48 @@ func TestClickHouseWritePreservesAllFields(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, groups, "nil groups must be encoded as an empty non-null array")
 }
+
+func TestClickHouseQueryAccessLogsFiltersOrdersAndLimits(t *testing.T) {
+	store := ensureClickHouse(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	marker := "viewer-" + time.Now().UTC().Format("20060102150405.000000000") + "@beyond.local"
+	base := time.Now().UTC().Add(-time.Minute).Truncate(time.Millisecond)
+	status := 403
+	records := []AccessLogRecord{
+		{Type: "http", Entry: AccessLogEntry{
+			Timestamp: base, Decision: "deny", UserEmail: marker,
+			UserGroups: []string{"engineering", "security"}, Resource: "grafana",
+			Method: "GET", Path: "/api/denied", Host: "grafana.internal",
+			SourceIP: "192.0.2.40", StatusCode: status,
+		}},
+		{Type: "http", Entry: AccessLogEntry{
+			Timestamp: base.Add(time.Second), Decision: "allow", UserEmail: marker,
+			UserGroups: []string{"engineering"}, Resource: "grafana",
+			Method: "GET", Path: "/api/allowed", Host: "grafana.internal",
+			SourceIP: "192.0.2.40", StatusCode: 200,
+		}},
+	}
+	require.NoError(t, store.WriteAccessLogs(ctx, records))
+
+	got, err := store.QueryAccessLogs(ctx, AccessLogQuery{
+		From: base.Add(-time.Second), To: base.Add(2 * time.Second),
+		UserEmail: marker, Resource: "grafana", Group: "engineering",
+		SourceIP: "192.0.2.40", Decision: "deny", Method: "GET",
+		Host: "grafana.internal", Path: "DENIED", Type: "http",
+		StatusCode: &status, Limit: 1,
+	})
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	assert.Equal(t, "/api/denied", got[0].Entry.Path)
+	assert.Equal(t, []string{"engineering", "security"}, got[0].Entry.UserGroups)
+
+	got, err = store.QueryAccessLogs(ctx, AccessLogQuery{
+		From: base.Add(-time.Second), To: base.Add(2 * time.Second),
+		UserEmail: marker, Limit: 2,
+	})
+	require.NoError(t, err)
+	require.Len(t, got, 2)
+	assert.Equal(t, "/api/allowed", got[0].Entry.Path, "newest event must be first")
+	assert.Equal(t, "/api/denied", got[1].Entry.Path)
+}

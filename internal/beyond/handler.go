@@ -53,6 +53,7 @@ type Handler struct {
 	authorizer   *Authorizer
 	proxies      *ProxyPool
 	accessLog    *AccessLogger
+	accessLogs   AccessLogQueryStore
 	logger       *slog.Logger
 	oidcAuth     *OIDCAuth // nil if OIDC not configured
 	mu           sync.RWMutex
@@ -97,11 +98,16 @@ func NewHandler(cfg *Config, sessions *SessionManager, accessLog *AccessLogger) 
 	if accessLog != nil && accessLog.Logger != nil {
 		logger = accessLog.Logger
 	}
+	var accessLogs AccessLogQueryStore
+	if accessLog != nil {
+		accessLogs, _ = accessLog.Sink.(AccessLogQueryStore)
+	}
 	h := &Handler{
 		sessions:          sessions,
 		authorizer:        NewAuthorizer(cfg),
 		proxies:           NewProxyPool(),
 		accessLog:         accessLog,
+		accessLogs:        accessLogs,
 		logger:            logger,
 		httpLifetime:      cfg.Sessions.HTTPLifetime,
 		portal:            clonePortalConfig(cfg.Portal),
@@ -118,6 +124,12 @@ func NewHandler(cfg *Config, sessions *SessionManager, accessLog *AccessLogger) 
 	h.mux = mux
 
 	return h
+}
+
+// SetAccessLogQueryStore overrides the read store. It is primarily useful for
+// tests; production discovers the query capability from AccessLogger.Sink.
+func (h *Handler) SetAccessLogQueryStore(store AccessLogQueryStore) {
+	h.accessLogs = store
 }
 
 // SetOIDCAuth attaches an OIDCAuth for login redirects. If nil, unauthenticated

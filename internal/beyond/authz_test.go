@@ -150,6 +150,14 @@ func TestAuthorizer_AllowedApplications_AdminSeesAllSorted(t *testing.T) {
 	assert.Equal(t, "grafana", apps[1].Name)
 }
 
+func TestAuthorizer_ApplicationNamesIncludesHiddenApps(t *testing.T) {
+	t.Parallel()
+	cfg := testConfig()
+	cfg.Applications["grafana"].HideFromPortal = true
+	names := NewAuthorizer(cfg).ApplicationNames()
+	assert.Equal(t, []string{"argocd", "grafana"}, names)
+}
+
 func TestAuthorizer_AllowedApplications_Empty(t *testing.T) {
 	t.Parallel()
 	apps := NewAuthorizer(testConfig()).AllowedApplications([]string{"unrelated"})
