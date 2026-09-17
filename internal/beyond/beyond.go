@@ -12,7 +12,6 @@ import (
 	"strings"
 	"time"
 
-	_ "github.com/lib/pq"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/urfave/cli/v3"
 )
@@ -49,7 +48,7 @@ func newServeCmd(configPath *string) *cli.Command {
 		metricsListen     string
 		tlsCert           string
 		tlsKey            string
-		dbURL             string
+		clickhouseURL     string
 		oidcIssuer        string
 		oidcClientID      string
 		oidcClientSecret  string
@@ -90,10 +89,10 @@ func newServeCmd(configPath *string) *cli.Command {
 				Destination: &tlsKey,
 			},
 			&cli.StringFlag{
-				Name:        "db-url",
-				Usage:       "PostgreSQL/Timescale connection URL",
-				Sources:     cli.EnvVars("BEYOND_DB_URL"),
-				Destination: &dbURL,
+				Name:        "clickhouse-url",
+				Usage:       "Optional ClickHouse connection URL for persistent access logs",
+				Sources:     cli.EnvVars("BEYOND_CLICKHOUSE_URL"),
+				Destination: &clickhouseURL,
 			},
 			&cli.StringFlag{
 				Name:        "oidc-issuer",
@@ -181,23 +180,31 @@ func newServeCmd(configPath *string) *cli.Command {
 				return fmt.Errorf("creating session manager: %w", err)
 			}
 
-			// Open PostgreSQL if --db-url is provided.
-			sqlDB, err := OpenDB(dbURL)
+			// ClickHouse persistence is optional. Keeping a non-nil AccessLogger
+			// even when it is disabled lets request handling and shutdown retain
+			// one simple, nil-safe logging path.
+			accessLog, accessLogStore, err := openAccessLogger(ctx, logger, clickhouseURL)
 			if err != nil {
-				return fmt.Errorf("opening database: %w", err)
+				return err
 			}
-			defer func() { _ = sqlDB.Close() }()
-
-			sqlDB.SetMaxOpenConns(25)
-			sqlDB.SetMaxIdleConns(5)
-			sqlDB.SetConnMaxLifetime(5 * time.Minute)
-
-			if err := RunBeyondMigrations(sqlDB); err != nil {
-				return fmt.Errorf("running migrations: %w", err)
+			if accessLogStore != nil {
+				defer func() { _ = accessLogStore.Close() }()
+				accessLog.StartFlusher()
+				// StopFlusher is idempotent (gracefulShutdown also calls it); this
+				// defer guarantees the writer is stopped before the store Close
+				// defer above runs on any early startup-error return path. Those
+				// paths have queued no access logs, so the drain returns at once;
+				// the bounded context is a backstop, never a real shutdown wait.
+				defer func() {
+					stopCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+					defer cancel()
+					accessLog.StopFlusher(stopCtx)
+				}()
+				logger.Info("ClickHouse connected and access-log schema initialized",
+					"retention_days", accessLogRetentionDays)
+			} else {
+				logger.Info("persistent access logging disabled")
 			}
-			accessLog := &AccessLogger{Logger: logger, DB: sqlDB}
-			accessLog.StartFlusher()
-			logger.Info("database connected and migrations applied")
 
 			// Create Handler.
 			handler := NewHandler(cfg, sm, accessLog)
@@ -315,6 +322,22 @@ func newServeCmd(configPath *string) *cli.Command {
 	}
 }
 
+// openAccessLogger creates the always-present request logger and attaches a
+// ClickHouse sink only when a URL is configured. An omitted or whitespace-only
+// URL deliberately means that persistent access logging is disabled.
+func openAccessLogger(ctx context.Context, logger *slog.Logger, clickhouseURL string) (*AccessLogger, *ClickHouseAccessLogStore, error) {
+	accessLog := &AccessLogger{Logger: logger}
+	if strings.TrimSpace(clickhouseURL) == "" {
+		return accessLog, nil, nil
+	}
+	store, err := OpenClickHouseAccessLogStore(ctx, clickhouseURL)
+	if err != nil {
+		return nil, nil, fmt.Errorf("opening access-log store: %w", err)
+	}
+	accessLog.Sink = store
+	return accessLog, store, nil
+}
+
 // proxyReadHeaderTimeout bounds how long a client may take to send the request
 // line and headers. It is the slowloris/handshake guard. Unlike ReadTimeout /
 // WriteTimeout it does NOT bound the body or the response, so it cannot sever
@@ -361,7 +384,7 @@ type serverShutdowner interface {
 
 // flusherStopper is the subset of *AccessLogger that gracefulShutdown needs.
 type flusherStopper interface {
-	StopFlusher()
+	StopFlusher(ctx context.Context)
 }
 
 // gracefulShutdown drains the main proxy server, THEN the metrics server, and
@@ -378,7 +401,7 @@ func gracefulShutdown(ctx context.Context, srv, debugSrv serverShutdowner, acces
 	if err := srv.Shutdown(ctx); err != nil {
 		return fmt.Errorf("server shutdown: %w", err)
 	}
-	accessLog.StopFlusher()
+	accessLog.StopFlusher(ctx)
 
 	if err := debugSrv.Shutdown(ctx); err != nil {
 		return fmt.Errorf("metrics server shutdown: %w", err)

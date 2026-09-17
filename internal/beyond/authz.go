@@ -76,6 +76,29 @@ func (az *Authorizer) AllowedApplications(userGroups []string) []PortalApplicati
 	return apps
 }
 
+// IsAdmin reports whether any of userGroups is configured as an admin group.
+// It is the public, lock-safe form of isAdmin for authenticated admin-only
+// surfaces such as the access-log viewer.
+func (az *Authorizer) IsAdmin(userGroups []string) bool {
+	az.mu.RLock()
+	defer az.mu.RUnlock()
+	return az.isAdmin(userGroups)
+}
+
+// ApplicationNames returns every configured application name in stable order.
+// Admin audit filters include hidden portal applications because those
+// backends still produce access records.
+func (az *Authorizer) ApplicationNames() []string {
+	az.mu.RLock()
+	names := make([]string, 0, len(az.applications))
+	for _, app := range az.applications {
+		names = append(names, app.Name)
+	}
+	az.mu.RUnlock()
+	sort.Strings(names)
+	return names
+}
+
 func applicationAllowsAnyGroup(app *Application, userGroups []string) bool {
 	for _, userGroup := range userGroups {
 		for _, allowedGroup := range app.AllowedGroups {

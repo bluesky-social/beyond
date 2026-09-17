@@ -90,6 +90,10 @@ down:
 psql DB="beyond" *ARGS="":
     docker exec -it beyond-postgres-1 psql -U beyond {{DB}} {{ARGS}}
 
+# Opens a ClickHouse shell
+clickhouse:
+    docker exec -it beyond-clickhouse-1 clickhouse-client -u beyond --password beyond -d beyond
+
 # Lints the code
 lint:
     golangci-lint run --timeout 5m ./...

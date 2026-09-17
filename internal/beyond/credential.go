@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
@@ -148,7 +147,7 @@ func (h *Handler) handleCredential(w http.ResponseWriter, r *http.Request, app *
 		// The host metric label must come from config, never from the
 		// attacker-controlled Host header: a flood of random Hosts would
 		// otherwise mint unbounded Prometheus time series (cardinality DoS).
-		// The access-log entry keeps the raw host — Postgres rows are bounded,
+		// The access-log entry keeps the raw host — ClickHouse rows are bounded,
 		// label sets are not.
 		metricHost := "unknown"
 		if app != nil {
@@ -346,7 +345,7 @@ func (h *Handler) validateCredential(ctx context.Context, ca *CredentialAuthConf
 		// A malformed token_url survives config validation only if it parses
 		// as absolute http(s) but is otherwise unusable; treat as unavailable
 		// (fail closed) and log server-side.
-		slog.Error("credential_auth: build token request", "error", err)
+		h.logger.Error("credential_auth: build token request", "error", err)
 		return credentialClaims{}, credUnavailable
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -358,7 +357,7 @@ func (h *Handler) validateCredential(ctx context.Context, ca *CredentialAuthConf
 	resp, err := client.Do(req)
 	if err != nil {
 		// Network error, connection refused, or context timeout — fail closed.
-		slog.Error("credential_auth: token endpoint request failed", "error", err)
+		h.logger.Error("credential_auth: token endpoint request failed", "error", err)
 		return credentialClaims{}, credUnavailable
 	}
 	defer func() { _ = resp.Body.Close() }()
@@ -367,7 +366,7 @@ func (h *Handler) validateCredential(ctx context.Context, ca *CredentialAuthConf
 	case resp.StatusCode == http.StatusOK:
 		// proceed
 	case resp.StatusCode >= 500:
-		slog.Error("credential_auth: token endpoint 5xx", "status", resp.StatusCode)
+		h.logger.Error("credential_auth: token endpoint 5xx", "status", resp.StatusCode)
 		return credentialClaims{}, credUnavailable
 	default:
 		// Any non-200, non-5xx (400 invalid_grant / invalid_client, 401, 403,
@@ -380,18 +379,18 @@ func (h *Handler) validateCredential(ctx context.Context, ca *CredentialAuthConf
 	// data into memory.
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
-		slog.Error("credential_auth: read token response", "error", err)
+		h.logger.Error("credential_auth: read token response", "error", err)
 		return credentialClaims{}, credUnavailable
 	}
 	var tr tokenResponse
 	if err := json.Unmarshal(body, &tr); err != nil || tr.AccessToken == "" {
-		slog.Error("credential_auth: decode token response", "error", err)
+		h.logger.Error("credential_auth: decode token response", "error", err)
 		return credentialClaims{}, credUnavailable
 	}
 
 	claims, err := decodeJWTClaims(tr.AccessToken)
 	if err != nil {
-		slog.Error("credential_auth: decode access token claims", "error", err)
+		h.logger.Error("credential_auth: decode access token claims", "error", err)
 		return credentialClaims{}, credUnavailable
 	}
 	return claims, credOK

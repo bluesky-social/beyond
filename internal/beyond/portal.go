@@ -9,13 +9,18 @@ import (
 )
 
 type portalPageData struct {
-	Title        string
-	User         string
-	Nonce        string
-	Applications []PortalApplication
+	Title          string
+	User           string
+	Nonce          string
+	ShowAccessLogs bool
+	Applications   []PortalApplication
 }
 
 func (h *Handler) handlePortal(w http.ResponseWriter, r *http.Request, portal PortalConfig, start time.Time) {
+	if r.URL.Path == accessLogsPath {
+		h.handleAccessLogs(w, r, portal, start)
+		return
+	}
 	if r.URL.Path != "/" {
 		beyondResponse(w, "not found", http.StatusNotFound)
 		return
@@ -55,10 +60,11 @@ func (h *Handler) handlePortal(w http.ResponseWriter, r *http.Request, portal Po
 		user = identity.Email
 	}
 	data := portalPageData{
-		Title:        portal.Title,
-		User:         user,
-		Nonce:        nonce,
-		Applications: h.authorizer.AllowedApplications(identity.Groups),
+		Title:          portal.Title,
+		User:           user,
+		Nonce:          nonce,
+		ShowAccessLogs: h.accessLogs != nil && h.authorizer.IsAdmin(identity.Groups),
+		Applications:   h.authorizer.AllowedApplications(identity.Groups),
 	}
 	var body bytes.Buffer
 	if err := portalTmpl.Execute(&body, data); err != nil {
@@ -122,7 +128,7 @@ body{margin:0;background:var(--bg);color:var(--text);font:15px/1.5 ui-sans-serif
 .topbar-inner,.main{width:min(100% - 40px,1040px);margin:0 auto}
 .topbar-inner{height:64px;display:flex;align-items:center;justify-content:space-between;gap:24px}
 .wordmark{font-size:13px;font-weight:700;letter-spacing:.13em;text-transform:uppercase}
-.account{color:var(--muted);font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.account-wrap{display:flex;align-items:center;gap:14px}.account{color:var(--muted);font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.admin-link{height:34px;display:inline-flex;align-items:center;padding:0 13px;border-radius:6px;background:var(--accent);color:#fff;font-size:13px;font-weight:650;text-decoration:none}.admin-link:hover{background:#134cae}.admin-link:focus-visible{outline:3px solid rgba(23,92,211,.25);outline-offset:2px}
 .main{padding:56px 0 72px}
 h1{margin:0;font-size:30px;line-height:1.2;letter-spacing:-.025em;font-weight:650}
 .intro{margin:10px 0 32px;color:var(--muted)}
@@ -139,7 +145,7 @@ h1{margin:0;font-size:30px;line-height:1.2;letter-spacing:-.025em;font-weight:65
 </style>
 </head>
 <body>
-<header class="topbar"><div class="topbar-inner"><div class="wordmark">Beyond</div><div class="account">{{.User}}</div></div></header>
+<header class="topbar"><div class="topbar-inner"><div class="wordmark">Beyond</div><div class="account-wrap">{{if .ShowAccessLogs}}<a class="admin-link" href="/admin/access-logs">Access logs</a>{{end}}<div class="account">{{.User}}</div></div></div></header>
 <main class="main">
 <h1>{{.Title}}</h1>
 <p class="intro">Applications available to your account.</p>

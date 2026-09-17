@@ -19,7 +19,7 @@ var (
 	// Deliberately NO email label: it is unbounded user-PII cardinality (every
 	// distinct user mints a fresh time series × buckets × other labels) and
 	// lands PII in Prometheus/federation/Grafana retention. Per-user breakdown
-	// belongs in access_logs (bounded Postgres rows), not in metric labels.
+	// belongs in access_logs (bounded ClickHouse rows), not in metric labels.
 	// host and method are clamped to config/verb sets for the same
 	// cardinality-containment reason.
 	httpRequestDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
@@ -83,13 +83,13 @@ var (
 		Buckets:   []float64{0.05, 0.1, 0.25, 0.5, 1, 2, 5},
 	}, []string{"status"})
 
-	// --- Access Log DB ---
+	// --- ClickHouse access logs ---
 
-	// accessLogFlushDuration tracks batch write time to the database.
+	// accessLogFlushDuration tracks batch write time to ClickHouse.
 	accessLogFlushDuration = promauto.NewHistogram(prometheus.HistogramOpts{
 		Namespace: "beyond",
 		Name:      "access_log_flush_duration_seconds",
-		Help:      "Duration of access log batch writes to the database.",
+		Help:      "Duration of access log batch writes to ClickHouse.",
 		Buckets:   []float64{0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1},
 	})
 
@@ -98,11 +98,17 @@ var (
 		Namespace: "beyond",
 		Name:      "access_log_flush_entries",
 		Help:      "Number of entries per access log batch flush.",
-		Buckets:   []float64{1, 5, 10, 25, 50, 100},
+		Buckets:   []float64{1, 10, 100, 250, 500, 1_000, 5_000, 50_000},
+	})
+
+	accessLogWriteFailures = promauto.NewCounter(prometheus.CounterOpts{
+		Namespace: "beyond",
+		Name:      "access_log_write_failures_total",
+		Help:      "Total failed ClickHouse access log batch writes.",
 	})
 
 	// accessLogDroppedEntries counts audit-log entries permanently lost
-	// because the in-memory retry buffer overflowed (DB unreachable long
+	// because the in-memory retry buffer overflowed (ClickHouse unreachable long
 	// enough to exceed maxBufferedEntries). This is the alertable signal that
 	// the access trail — beyond's primary access-logging mechanism — has gaps.
 	accessLogDroppedEntries = promauto.NewCounter(prometheus.CounterOpts{
