@@ -60,6 +60,7 @@ func TestPortal_AuthenticatedUserSeesOnlyAllowedApplications(t *testing.T) {
 func TestPortal_AdminSeesAllApplicationsInStableOrder(t *testing.T) {
 	t.Parallel()
 	h, sm := portalTestHandler(t)
+	h.SetAccessLogQueryStore(&recordingAccessLogQueryStore{})
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Host = "access.internal"
 	setSession(t, sm, req, "admin@example.com", []string{"authentik Admins"})
@@ -73,6 +74,20 @@ func TestPortal_AdminSeesAllApplicationsInStableOrder(t *testing.T) {
 	assert.Less(t, len(html), 16*1024, "the portal should remain a small document")
 	assert.Contains(t, html, `href="/admin/access-logs"`)
 	assert.Less(t, stringIndex(t, html, "Argo CD"), stringIndex(t, html, "Grafana"))
+}
+
+func TestPortal_AdminDoesNotSeeAccessLogsWithoutClickHouse(t *testing.T) {
+	t.Parallel()
+	h, sm := portalTestHandler(t)
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Host = "access.internal"
+	setSession(t, sm, req, "admin@example.com", []string{"authentik Admins"})
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.NotContains(t, rec.Body.String(), `href="/admin/access-logs"`)
 }
 
 func TestPortal_EmptyState(t *testing.T) {

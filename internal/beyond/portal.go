@@ -63,7 +63,7 @@ func (h *Handler) handlePortal(w http.ResponseWriter, r *http.Request, portal Po
 		Title:          portal.Title,
 		User:           user,
 		Nonce:          nonce,
-		ShowAccessLogs: h.authorizer.IsAdmin(identity.Groups),
+		ShowAccessLogs: h.accessLogs != nil && h.authorizer.IsAdmin(identity.Groups),
 		Applications:   h.authorizer.AllowedApplications(identity.Groups),
 	}
 	var body bytes.Buffer

@@ -114,6 +114,23 @@ func TestGracefulShutdown_SurfacesServerError(t *testing.T) {
 	assert.ErrorIs(t, err, boom)
 }
 
+func TestOpenAccessLoggerWithoutClickHouse(t *testing.T) {
+	t.Parallel()
+
+	accessLog, store, err := openAccessLogger(context.Background(), testLogger(), "  ")
+	require.NoError(t, err)
+	require.NotNil(t, accessLog)
+	assert.Nil(t, store)
+	assert.Nil(t, accessLog.Sink)
+
+	// Every lifecycle operation must remain safe in disabled mode because the
+	// handler and graceful shutdown intentionally use the same logger path.
+	accessLog.StartFlusher()
+	accessLog.Log("http", AccessLogEntry{Path: "/without-clickhouse"})
+	accessLog.Flush()
+	accessLog.StopFlusher(context.Background())
+}
+
 func indexOf(s []string, v string) int {
 	for i, x := range s {
 		if x == v {

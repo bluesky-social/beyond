@@ -116,10 +116,11 @@ beyond serves plain HTTP unless you hand it a cert with `BEYOND_TLS_CERT`/`BEYON
 
 ### Access-log storage
 
-`BEYOND_CLICKHOUSE_URL` is required. At startup, each Beyond replica
-idempotently creates one `access_logs` `MergeTree` table with monthly
-partitions and a native 90-day TTL. Rows are ordered by day, user, and event
-time for time-bounded audit queries.
+`BEYOND_CLICKHOUSE_URL` is optional. When it is omitted, Beyond runs without
+persistent access-log storage and the admin access-log viewer is hidden. When
+it is configured, each Beyond replica idempotently creates one `access_logs`
+`MergeTree` table with monthly partitions and a native 90-day TTL. Rows are
+ordered by day, user, and event time for time-bounded audit queries.
 
 Beyond batches up to 1,000 events per native insert and flushes low-volume
 traffic every five seconds. ClickHouse I/O runs outside request goroutines.
@@ -130,13 +131,14 @@ events; overflow drops the oldest events and increments
 ClickHouse commits but before it acknowledges an insert, retries are
 at-least-once and may very rarely produce duplicate rows.
 
-Members of a configured `admin_groups` group see an **Access logs** link on
-the portal overview. The viewer supports bounded UTC time ranges plus exact
-filters for user, application, group, source IP, decision, method, status,
-host, and event type, with a case-insensitive path search. Results are newest
-first and capped at 500 rows; individual queries may span at most 31 days of
-the 90-day retention window. The route is enforced independently of link
-visibility and revalidates group membership when user validation is enabled.
+When ClickHouse is configured, members of a configured `admin_groups` group
+see an **Access logs** link on the portal overview. The viewer supports bounded
+UTC time ranges plus exact filters for user, application, group, source IP,
+decision, method, status, host, and event type, with a case-insensitive path
+search. Results are newest first and capped at 500 rows; individual queries may
+span at most 31 days of the 90-day retention window. The route is enforced
+independently of link visibility and revalidates group membership when user
+validation is enabled.
 
 ## Design proposals
 

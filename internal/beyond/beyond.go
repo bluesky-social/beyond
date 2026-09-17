@@ -90,7 +90,7 @@ func newServeCmd(configPath *string) *cli.Command {
 			},
 			&cli.StringFlag{
 				Name:        "clickhouse-url",
-				Usage:       "ClickHouse connection URL for access logs",
+				Usage:       "Optional ClickHouse connection URL for persistent access logs",
 				Sources:     cli.EnvVars("BEYOND_CLICKHOUSE_URL"),
 				Destination: &clickhouseURL,
 			},
@@ -180,32 +180,31 @@ func newServeCmd(configPath *string) *cli.Command {
 				return fmt.Errorf("creating session manager: %w", err)
 			}
 
-			if clickhouseURL == "" {
-				return fmt.Errorf("--clickhouse-url is required")
-			}
-
-			// ClickHouse is the durable access-log store. Schema creation is
-			// idempotent, so every replica can safely initialize at startup.
-			accessLogStore, err := OpenClickHouseAccessLogStore(ctx, clickhouseURL)
+			// ClickHouse persistence is optional. Keeping a non-nil AccessLogger
+			// even when it is disabled lets request handling and shutdown retain
+			// one simple, nil-safe logging path.
+			accessLog, accessLogStore, err := openAccessLogger(ctx, logger, clickhouseURL)
 			if err != nil {
-				return fmt.Errorf("opening access-log store: %w", err)
+				return err
 			}
-			defer func() { _ = accessLogStore.Close() }()
-
-			accessLog := &AccessLogger{Logger: logger, Sink: accessLogStore}
-			accessLog.StartFlusher()
-			// StopFlusher is idempotent (gracefulShutdown also calls it); this
-			// defer guarantees the writer is stopped before the store Close
-			// defer above runs on any early startup-error return path. Those
-			// paths have queued no access logs, so the drain returns at once;
-			// the bounded context is a backstop, never a real shutdown wait.
-			defer func() {
-				stopCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-				defer cancel()
-				accessLog.StopFlusher(stopCtx)
-			}()
-			logger.Info("ClickHouse connected and access-log schema initialized",
-				"retention_days", accessLogRetentionDays)
+			if accessLogStore != nil {
+				defer func() { _ = accessLogStore.Close() }()
+				accessLog.StartFlusher()
+				// StopFlusher is idempotent (gracefulShutdown also calls it); this
+				// defer guarantees the writer is stopped before the store Close
+				// defer above runs on any early startup-error return path. Those
+				// paths have queued no access logs, so the drain returns at once;
+				// the bounded context is a backstop, never a real shutdown wait.
+				defer func() {
+					stopCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+					defer cancel()
+					accessLog.StopFlusher(stopCtx)
+				}()
+				logger.Info("ClickHouse connected and access-log schema initialized",
+					"retention_days", accessLogRetentionDays)
+			} else {
+				logger.Info("persistent access logging disabled")
+			}
 
 			// Create Handler.
 			handler := NewHandler(cfg, sm, accessLog)
@@ -321,6 +320,22 @@ func newServeCmd(configPath *string) *cli.Command {
 			return nil
 		},
 	}
+}
+
+// openAccessLogger creates the always-present request logger and attaches a
+// ClickHouse sink only when a URL is configured. An omitted or whitespace-only
+// URL deliberately means that persistent access logging is disabled.
+func openAccessLogger(ctx context.Context, logger *slog.Logger, clickhouseURL string) (*AccessLogger, *ClickHouseAccessLogStore, error) {
+	accessLog := &AccessLogger{Logger: logger}
+	if strings.TrimSpace(clickhouseURL) == "" {
+		return accessLog, nil, nil
+	}
+	store, err := OpenClickHouseAccessLogStore(ctx, clickhouseURL)
+	if err != nil {
+		return nil, nil, fmt.Errorf("opening access-log store: %w", err)
+	}
+	accessLog.Sink = store
+	return accessLog, store, nil
 }
 
 // proxyReadHeaderTimeout bounds how long a client may take to send the request
