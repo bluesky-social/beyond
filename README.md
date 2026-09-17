@@ -1,6 +1,6 @@
 # beyond
 
-A zero-trust network access (ZTNA) reverse proxy. It sits in front of internal HTTP apps (Grafana, ArgoCD, etc.), authenticates users against an OIDC provider, checks group membership, and forwards allowed requests upstream with identity headers (`X-Beyond-Email`, `X-Beyond-Groups`, ...). Access logs are written to ClickHouse in efficient batches and retained for 90 days.
+A zero-trust network access (ZTNA) reverse proxy. It sits in front of internal HTTP apps (Grafana, ArgoCD, etc.), authenticates users against an OIDC provider, checks group membership, and forwards allowed requests upstream with identity headers (`X-Beyond-Email`, `X-Beyond-Groups`, ...). Access logs go to stdout and Postgres.
 
 Apps and their allowed groups are declared in a YAML config:
 
@@ -108,37 +108,11 @@ docker run --rm \
   -e BEYOND_OIDC_ISSUER=https://auth.example.com/application/o/beyond/ \
   -e BEYOND_OIDC_CLIENT_ID=... \
   -e BEYOND_OIDC_CLIENT_SECRET=... \
-  -e BEYOND_CLICKHOUSE_URL='clickhouse://user:password@clickhouse:9440/beyond?secure=true' \
+  -e BEYOND_DB_URL=postgresql://... \
   ghcr.io/bluesky-social/beyond:latest
 ```
 
 beyond serves plain HTTP unless you hand it a cert with `BEYOND_TLS_CERT`/`BEYOND_TLS_KEY` — terminate TLS at your load balancer or mount a cert. Run `beyond serve --help` for the full list of flags. The metrics/pprof server listens on `:6060` and should never be exposed publicly.
-
-### Access-log storage
-
-`BEYOND_CLICKHOUSE_URL` is optional. When it is omitted, Beyond runs without
-persistent access-log storage and the admin access-log viewer is hidden. When
-it is configured, each Beyond replica idempotently creates one `access_logs`
-`MergeTree` table with monthly partitions and a native 90-day TTL. Rows are
-ordered by day, user, and event time for time-bounded audit queries.
-
-Beyond batches up to 1,000 events per native insert and flushes low-volume
-traffic every five seconds. ClickHouse I/O runs outside request goroutines.
-Failed batches are retried, while the in-memory queue is capped at 50,000
-events; overflow drops the oldest events and increments
-`beyond_access_log_dropped_entries_total`. Failed writes increment
-`beyond_access_log_write_failures_total`. Because a connection can fail after
-ClickHouse commits but before it acknowledges an insert, retries are
-at-least-once and may very rarely produce duplicate rows.
-
-When ClickHouse is configured, members of a configured `admin_groups` group
-see an **Access logs** link on the portal overview. The viewer supports bounded
-UTC time ranges plus exact filters for user, application, group, source IP,
-decision, method, status, host, and event type, with a case-insensitive path
-search. Results are newest first and capped at 500 rows; individual queries may
-span at most 31 days of the 90-day retention window. The route is enforced
-independently of link visibility and revalidates group membership when user
-validation is enabled.
 
 ## Design proposals
 
@@ -150,7 +124,7 @@ You need Go, docker compose, OpenSSL, and [just](https://github.com/casey/just).
 
 ```bash
 just install-tools  # one-time: golangci-lint + gotestsum
-just up             # dev stack: Authentik, Postgres, ClickHouse, echo server
+just up             # dev stack: Authentik, Postgres, echo server
 just run beyond serve
 
 just                # lint + test
@@ -162,7 +136,7 @@ ignored, self-signed certificate for `localhost` and `echo.localhost`; accept
 or locally trust that certificate when using a browser. Sign in with
 `test@beyond.local` / `test`.
 
-Unit tests need no infrastructure; e2e/ClickHouse tests want the dev stack up and skip themselves otherwise. The dev Authentik login is `test@beyond.local` / `test`.
+Unit tests need no infrastructure; e2e/DB tests want the dev stack up and skip themselves otherwise. The dev Authentik login is `test@beyond.local` / `test`.
 
 ## License
 
