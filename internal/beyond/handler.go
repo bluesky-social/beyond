@@ -295,6 +295,15 @@ func (h *Handler) handleProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Some upstreams authenticate opaque bearer tokens that Beyond cannot
+	// validate locally. Delegate only operator-listed exact paths, before
+	// session handling, so the upstream receives the protocol request unchanged
+	// and remains the sole authentication boundary.
+	if app := h.authorizer.LookupApp(host); upstreamAuthPassthroughPath(r, app) {
+		h.handleUpstreamAuthPassthrough(w, r, app, start)
+		return
+	}
+
 	// Some machine protocols must reach the upstream once without credentials
 	// in order to discover how to authenticate. Match only explicitly listed,
 	// canonical paths and only when Authorization is absent. This happens

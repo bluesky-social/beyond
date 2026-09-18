@@ -60,6 +60,26 @@ every delegated path and must authenticate it (for example, by returning a
 `401` with `WWW-Authenticate`) or intentionally serve it anonymously. Never
 delegate a path that exposes data or actions before upstream authentication.
 
+For an upstream that authenticates opaque bearer tokens Beyond cannot verify,
+use exact `upstream_auth_passthrough_paths` instead:
+
+```yaml
+applications:
+  opaque-mcp:
+    upstream: http://agent-gateway:4011
+    host: opaque-mcp.example.com
+    allowed_groups: [engineering]
+    upstream_auth_passthrough_paths:
+      - /mcp
+      - /.well-known/oauth-protected-resource/mcp
+```
+
+These paths accept either no `Authorization` header for protocol bootstrap or
+a non-empty `Bearer` credential, which is forwarded unchanged. Beyond does not
+apply `allowed_groups` or inject identity. Other schemes and all unlisted,
+nearby, escaped, or non-canonical paths retain Beyond's normal authentication.
+Use this only when the upstream independently fails closed on protected paths.
+
 Split-origin browser applications can opt in to
 `cors_preflight_passthrough: true` when their API uses `bearer_auth`. Beyond
 delegates only credential-free `OPTIONS` requests containing both `Origin` and

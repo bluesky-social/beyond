@@ -83,6 +83,17 @@ type Application struct {
 	// Authorization are never eligible: their JWT still follows beyond's normal
 	// signature, issuer, audience, expiry, and group-policy checks.
 	UnauthenticatedPassthroughPaths []string `yaml:"unauthenticated_passthrough_paths"`
+	// UpstreamAuthPassthroughPaths lists exact, canonical URL paths whose
+	// authentication boundary is deliberately delegated to the upstream. A
+	// matching request may carry either no Authorization header (protocol
+	// bootstrap) or a non-empty Bearer credential; Beyond does not validate the
+	// credential or apply allowed_groups, and forwards it unchanged.
+	//
+	// This is for opaque-token protocols whose upstream can authenticate the
+	// bearer but Beyond cannot. The upstream MUST fail closed on every protected
+	// path. Other authorization schemes, nearby paths, and escaped paths remain
+	// ineligible.
+	UpstreamAuthPassthroughPaths []string `yaml:"upstream_auth_passthrough_paths"`
 	// CORSPreflightPassthrough delegates only well-formed, credential-free CORS
 	// preflight requests to the upstream. This is needed for split-origin apps
 	// whose browser API calls authenticate with bearer tokens: the OPTIONS probe
@@ -403,6 +414,9 @@ func (cfg *Config) validate() error {
 		if err := validateUnauthenticatedPassthroughPaths(name, app); err != nil {
 			return err
 		}
+		if err := validateUpstreamAuthPassthroughPaths(name, app); err != nil {
+			return err
+		}
 		if app.CORSPreflightPassthrough && app.BearerAuth == nil {
 			return fmt.Errorf("application %q: cors_preflight_passthrough requires bearer_auth", name)
 		}
@@ -622,6 +636,27 @@ func validateUnauthenticatedPassthroughPaths(appName string, app *Application) e
 		}
 		if _, ok := seen[p]; ok {
 			return fmt.Errorf("application %q: unauthenticated_passthrough_paths[%d] duplicates %q", appName, i, p)
+		}
+		seen[p] = struct{}{}
+	}
+	return nil
+}
+
+func validateUpstreamAuthPassthroughPaths(appName string, app *Application) error {
+	paths := app.UpstreamAuthPassthroughPaths
+	seen := make(map[string]struct{}, len(paths))
+	for i, p := range paths {
+		if p == "" || p[0] != '/' {
+			return fmt.Errorf("application %q: upstream_auth_passthrough_paths[%d] %q must be an absolute path", appName, i, p)
+		}
+		if p == "/" {
+			return fmt.Errorf("application %q: upstream_auth_passthrough_paths[%d] must not expose the application root", appName, i)
+		}
+		if strings.ContainsAny(p, "?#%") || containsCtrl(p) || path.Clean(p) != p {
+			return fmt.Errorf("application %q: upstream_auth_passthrough_paths[%d] %q must be a canonical literal path without query, fragment, escaping, or control characters", appName, i, p)
+		}
+		if _, ok := seen[p]; ok {
+			return fmt.Errorf("application %q: upstream_auth_passthrough_paths[%d] duplicates %q", appName, i, p)
 		}
 		seen[p] = struct{}{}
 	}
