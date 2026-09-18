@@ -228,6 +228,34 @@ func TestReverseProxy_OverwritesForwardedHeaders(t *testing.T) {
 	assert.NotContains(t, gotFor, "10.9.9.9", "client-supplied X-Forwarded-For must not survive")
 }
 
+// TestReverseProxy_ForwardsResolvedClientIP verifies that when the edge has
+// resolved a trusted-proxy-aware client IP (carried on the request context by
+// Handler.ServeHTTP), setForwardedHeaders forwards THAT IP upstream — not the
+// direct peer — so the IP logged and the IP forwarded stay consistent.
+func TestReverseProxy_ForwardsResolvedClientIP(t *testing.T) {
+	t.Parallel()
+
+	var gotFor string
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotFor = r.Header.Get("X-Forwarded-For")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer backend.Close()
+
+	bp, err := newBeyondProxy(backend.URL)
+	require.NoError(t, err)
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "10.61.17.86:44321" // internal LB/node peer
+	// The edge already resolved the true client from a trusted XFF chain.
+	req = req.WithContext(withClientIP(req.Context(), "198.51.100.23"))
+
+	rec := httptest.NewRecorder()
+	bp.ServeHTTP(rec, req, &Identity{Email: "alice@example.com"}, nil)
+
+	assert.Equal(t, "198.51.100.23", gotFor, "resolved client IP must be forwarded upstream, not the internal peer")
+}
+
 func TestReverseProxy_PreserveHostUsesConfiguredApplicationHost(t *testing.T) {
 	t.Parallel()
 	var gotHost string

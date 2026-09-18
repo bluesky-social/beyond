@@ -159,6 +159,32 @@ func TestHandler_SourceIP(t *testing.T) {
 	assert.Equal(t, "192.168.1.1", sourceIP(req2))
 }
 
+// TestHandler_ServeHTTPResolvesClientIP verifies the edge wiring: ServeHTTP
+// resolves the trusted-proxy-aware client IP and stashes it so downstream
+// sourceIP(r) returns the real client behind an XFF-appending trusted proxy.
+func TestHandler_ServeHTTPResolvesClientIP(t *testing.T) {
+	t.Parallel()
+
+	prefixes, err := parseTrustedProxies([]string{"10.0.0.0/8"})
+	require.NoError(t, err)
+
+	h := &Handler{}
+	h.SetTrustedProxies(prefixes)
+	var got string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(_ http.ResponseWriter, r *http.Request) {
+		got = sourceIP(r)
+	})
+	h.mux = mux
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "10.61.17.86:44321" // trusted internal LB peer
+	req.Header.Set("X-Forwarded-For", "198.51.100.23")
+
+	h.ServeHTTP(httptest.NewRecorder(), req)
+	assert.Equal(t, "198.51.100.23", got)
+}
+
 func TestHandler_ReloadConfig(t *testing.T) {
 	t.Parallel()
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
