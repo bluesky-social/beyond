@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"strings"
 	"sync"
@@ -59,6 +60,11 @@ type Handler struct {
 	mu           sync.RWMutex
 	httpLifetime time.Duration
 	portal       *PortalConfig
+
+	// clientIP resolves the true client IP per request. Empty by default
+	// (RemoteAddr only); operators behind a load balancer configure trusted
+	// proxy CIDRs via SetTrustedProxies so X-Forwarded-For can be trusted.
+	clientIP clientIPResolver
 
 	// User validation against identity provider.
 	userValidator *UserValidator // nil if not configured
@@ -147,6 +153,15 @@ func (h *Handler) SetUserValidator(uv *UserValidator) {
 	h.userValidator = uv
 }
 
+// SetTrustedProxies configures the CIDRs whose appended X-Forwarded-For entries
+// beyond will trust when resolving the client IP. With none set (the default),
+// the immediate TCP peer (RemoteAddr) is always used and X-Forwarded-For is
+// ignored. Set this to your load balancer / VPC CIDRs when beyond runs behind a
+// proxy that terminates the client connection (e.g. an AWS ALB).
+func (h *Handler) SetTrustedProxies(prefixes []netip.Prefix) {
+	h.clientIP.trusted = prefixes
+}
+
 // ReloadConfig atomically replaces the authorizer's internal maps and
 // config-derived handler fields.
 //
@@ -197,6 +212,13 @@ func (h *Handler) getHTTPLifetime() time.Duration {
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// HSTS on all responses (transport-level, safe for proxied responses).
 	w.Header().Set("Strict-Transport-Security", "max-age=63072000; includeSubDomains")
+
+	// Resolve the true client IP once, at the edge, and carry it on the request
+	// context. Every downstream consumer (access logging via sourceIP, the
+	// outbound X-Forwarded-For header via setForwardedHeaders) reads this single
+	// value, so the IP beyond logs always matches the IP it forwards upstream.
+	r = r.WithContext(withClientIP(r.Context(), h.clientIP.clientIP(r)))
+
 	h.mux.ServeHTTP(w, r)
 }
 
@@ -799,11 +821,16 @@ func oidcRedirectURL(r *http.Request) string {
 	return "https://" + r.Host + "/oidc/callback"
 }
 
-// sourceIP extracts the client IP from the request using RemoteAddr.
-// X-Forwarded-For is intentionally not trusted because it is trivially
-// spoofable by clients. If beyond runs behind a load balancer, configure the
-// LB to overwrite (not append) a trusted header, or use PROXY protocol.
+// sourceIP returns the client IP for the request. It reads the value resolved
+// once at the edge by Handler.ServeHTTP (see clientIPResolver), which honours
+// the configured trusted-proxy CIDRs. When that value is absent — e.g. a unit
+// test calling this directly, or any path that did not pass through ServeHTTP —
+// it falls back to RemoteAddr, which is also the resolved value when no trusted
+// proxies are configured (X-Forwarded-For untrusted by default).
 func sourceIP(r *http.Request) string {
+	if ip, ok := clientIPFromContext(r.Context()); ok {
+		return ip
+	}
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		return r.RemoteAddr

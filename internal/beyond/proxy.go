@@ -151,10 +151,11 @@ func scrubBeyondCookies(out *http.Request) {
 //     apps infer cookie Secure flags and redirect schemes from this.
 //   - X-Forwarded-Host is the host the client requested (pr.In.Host), not the
 //     rewritten upstream host, so upstream-built URLs point at the public name.
-//   - X-Forwarded-For is the client IP from RemoteAddr. We OVERWRITE rather
-//     than append because the client-supplied value was already stripped and
-//     beyond does not trust inbound forwarding chains (sourceIP uses
-//     RemoteAddr for the same reason).
+//   - X-Forwarded-For is the client IP beyond resolved at the edge (see
+//     clientIPResolver / Handler.ServeHTTP): the trusted-proxy-aware value when
+//     configured, otherwise RemoteAddr. We OVERWRITE rather than append because
+//     the client-supplied value was already stripped and beyond substitutes the
+//     single IP it authoritatively vouches for — the same one it logs.
 //
 // These are Set (overwrite), never Add, so a client cannot smuggle a spoofed
 // forwarding chain through beyond.
@@ -162,9 +163,12 @@ func setForwardedHeaders(pr *httputil.ProxyRequest) {
 	pr.Out.Header.Set("X-Forwarded-Proto", "https")
 	pr.Out.Header.Set("X-Forwarded-Host", pr.In.Host)
 
-	clientIP := pr.In.RemoteAddr
-	if host, _, err := net.SplitHostPort(pr.In.RemoteAddr); err == nil {
-		clientIP = host
+	clientIP, ok := clientIPFromContext(pr.In.Context())
+	if !ok {
+		clientIP = pr.In.RemoteAddr
+		if host, _, err := net.SplitHostPort(pr.In.RemoteAddr); err == nil {
+			clientIP = host
+		}
 	}
 	if clientIP != "" {
 		pr.Out.Header.Set("X-Forwarded-For", clientIP)

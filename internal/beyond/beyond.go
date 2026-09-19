@@ -56,6 +56,7 @@ func newServeCmd(configPath *string) *cli.Command {
 		sessionSecrets    []string
 		authentikAPIURL   string
 		authentikAPIToken string
+		trustedProxies    []string
 	)
 
 	return &cli.Command{
@@ -136,6 +137,12 @@ func newServeCmd(configPath *string) *cli.Command {
 				Sources:     cli.EnvVars("BEYOND_AUTHENTIK_API_TOKEN"),
 				Destination: &authentikAPIToken,
 			},
+			&cli.StringSliceFlag{
+				Name:        "trusted-proxies",
+				Usage:       "Trusted proxy CIDRs whose X-Forwarded-For is honored when resolving the client IP (e.g. your VPC/LB CIDR like 10.0.0.0/16). Repeatable or CSV. Unset: X-Forwarded-For is ignored and the direct peer is used.",
+				Sources:     cli.EnvVars("BEYOND_TRUSTED_PROXIES"),
+				Destination: &trustedProxies,
+			},
 		},
 		Action: func(ctx context.Context, cmd *cli.Command) error {
 			logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
@@ -208,6 +215,18 @@ func newServeCmd(configPath *string) *cli.Command {
 
 			// Create Handler.
 			handler := NewHandler(cfg, sm, accessLog)
+
+			// Configure trusted-proxy CIDRs for client-IP resolution. A malformed
+			// CIDR is a hard boot error rather than a silently-disabled feature.
+			trustedPrefixes, err := parseTrustedProxies(trustedProxies)
+			if err != nil {
+				return err
+			}
+			if len(trustedPrefixes) > 0 {
+				handler.SetTrustedProxies(trustedPrefixes)
+				logger.Info("trusted proxies configured for client-IP resolution",
+					"count", len(trustedPrefixes))
+			}
 
 			//  Create user validator if Authentik API is configured.
 			if authentikAPIURL != "" && authentikAPIToken != "" {
