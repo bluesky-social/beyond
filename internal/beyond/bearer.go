@@ -127,7 +127,11 @@ func (h *Handler) handleBearer(w http.ResponseWriter, r *http.Request, app *Appl
 
 	claims, err := h.bearerVerifiers.forApp(app).Verify(r.Context(), rawToken)
 	if err != nil {
-		logEntry.Error = "invalid bearer token"
+		// Record why verification failed. The response stays opaque below —
+		// an unauthenticated caller must not learn which check rejected it —
+		// so the access log is the only place expiry, audience mismatch and
+		// signature failure remain distinguishable for operators.
+		logEntry.Error = fmt.Sprintf("invalid bearer token: %s", truncateLogError(err.Error()))
 		logHTTP("deny", http.StatusUnauthorized)
 		beyondResponse(w, "invalid token", http.StatusUnauthorized)
 		return
@@ -214,4 +218,21 @@ func bearerToken(r *http.Request) string {
 		return strings.TrimSpace(auth[len(prefix):])
 	}
 	return ""
+}
+
+// maxLogErrorLen bounds the verification reason recorded in the access log.
+// The reason quotes token-derived values — an audience mismatch echoes the
+// token's own `aud` claim — so it is attacker-influenced. bearerFailLimiter
+// bounds how often these rows are written, not how large each one is, so a
+// crafted JWT could otherwise inflate a ClickHouse row arbitrarily.
+const maxLogErrorLen = 200
+
+// truncateLogError caps an attacker-influenced error string for the access
+// log, dropping any partial rune left by the cut so the stored value is
+// always valid UTF-8.
+func truncateLogError(s string) string {
+	if len(s) <= maxLogErrorLen {
+		return s
+	}
+	return strings.ToValidUTF8(s[:maxLogErrorLen], "") + "(truncated)"
 }
