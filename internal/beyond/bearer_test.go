@@ -9,8 +9,10 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	jose "github.com/go-jose/go-jose/v4"
 	"github.com/go-jose/go-jose/v4/jwt"
@@ -420,7 +422,7 @@ applications:
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			f := writeTempFile(t,tc.yaml)
+			f := writeTempFile(t, tc.yaml)
 			_, err := LoadConfig(f)
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), tc.wantErr)
@@ -428,7 +430,7 @@ applications:
 	}
 
 	t.Run("complete bearer_auth parses", func(t *testing.T) {
-		f := writeTempFile(t,base+`      issuer: https://auth.example.com/o/skipper/
+		f := writeTempFile(t, base+`      issuer: https://auth.example.com/o/skipper/
       jwks_url: http://jwks.svc/keys
       audience: client-id
 `)
@@ -440,4 +442,104 @@ applications:
 		assert.Equal(t, "http://jwks.svc/keys", ba.JWKSURL)
 		assert.Equal(t, "client-id", ba.Audience)
 	})
+}
+
+// TestBearer_InvalidTokenLogsReason pins the operator-facing contract that a
+// rejected bearer token records *why* verification failed. Beyond answers every
+// cause with an identical opaque 401, so the access log is the only place the
+// distinction survives; without it "token expired" and "wrong audience" are
+// indistinguishable in production.
+func TestBearer_InvalidTokenLogsReason(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		aud     string
+		exp     time.Time
+		wantLog string
+	}{
+		{
+			name:    "expired token",
+			aud:     bearerTestAudience,
+			exp:     time.Now().Add(-time.Hour),
+			wantLog: "expired",
+		},
+		{
+			name:    "wrong audience",
+			aud:     "some-other-client",
+			exp:     time.Now().Add(time.Hour),
+			wantLog: "audience",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			h, idp, backend := newBearerTestHandler(t)
+			sink := &recordingAccessLogSink{}
+			h.accessLog.Sink = sink
+
+			tok := idp.mint(t, bearerTestIssuer, tt.aud, tt.exp, []string{"platform"})
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, bearerReq("skipper.example.com", tok))
+			h.accessLog.Flush()
+
+			assert.Equal(t, http.StatusUnauthorized, rec.Result().StatusCode)
+			// The response stays opaque on purpose: an unauthenticated caller
+			// must not learn which check failed. Only the log gains detail.
+			assert.Contains(t, rec.Body.String(), "invalid token")
+			assert.Nil(t, backend.last, "rejected token must not reach the upstream")
+
+			records, _ := sink.snapshot()
+			require.Len(t, records, 1)
+			assert.Contains(t, records[0].Entry.Error, tt.wantLog)
+		})
+	}
+}
+
+func TestTruncateLogError(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			name: "short string is unchanged",
+			in:   "oidc: token is expired",
+			want: "oidc: token is expired",
+		},
+		{
+			name: "exactly at the cap is unchanged",
+			in:   strings.Repeat("a", maxLogErrorLen),
+			want: strings.Repeat("a", maxLogErrorLen),
+		},
+		{
+			name: "over the cap is truncated and marked",
+			in:   strings.Repeat("a", maxLogErrorLen+50),
+			want: strings.Repeat("a", maxLogErrorLen) + "(truncated)",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, truncateLogError(tt.in))
+		})
+	}
+}
+
+// TestTruncateLogErrorSplitRune covers the boundary case a byte-slice cut
+// creates: a crafted `aud` claim can place a multi-byte rune across the cap,
+// and a partial rune would store invalid UTF-8 in ClickHouse.
+func TestTruncateLogErrorSplitRune(t *testing.T) {
+	t.Parallel()
+
+	// One byte of padding then multi-byte runes, so the cut lands mid-rune.
+	in := strings.Repeat("a", maxLogErrorLen-1) + strings.Repeat("é", 20)
+	got := truncateLogError(in)
+
+	assert.True(t, utf8.ValidString(got), "truncated value must be valid UTF-8, got %q", got)
+	assert.True(t, strings.HasSuffix(got, "(truncated)"))
 }
