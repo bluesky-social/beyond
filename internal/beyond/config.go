@@ -115,6 +115,26 @@ type BearerAuthConfig struct {
 	Issuer   string `yaml:"issuer"`
 	JWKSURL  string `yaml:"jwks_url"`
 	Audience string `yaml:"audience"`
+	// CORSOrigins lists the browser origins allowed to read the responses
+	// beyond itself generates on the bearer path (401, 403, 429, 502), for a
+	// split-origin app whose UI calls this API from another host. Without it a
+	// browser blocks every beyond error as a CORS failure, so the UI cannot
+	// even see the status code. Each entry is an exact https origin.
+	//
+	// Proxied responses are untouched: the upstream's own CORS policy governs
+	// those, as it does preflights under cors_preflight_passthrough.
+	CORSOrigins []string `yaml:"cors_origins"`
+	// SignalExpiry answers an expired token with a JSON 401 whose message is
+	// "jwt expired" (the jsonwebtoken library's wording, which browser clients
+	// such as GrowthBook match on to refresh their token) instead of the opaque
+	// "invalid token". Expired tokens also stop spending bearerFailLimiter
+	// budget, because expiry is the routine end of a browser token's life.
+	//
+	// This discloses nothing: the signature is verified before expiry is
+	// checked, so only the holder of a genuine token can provoke the response,
+	// and they can read `exp` from the token themselves. It is opt-in only so
+	// that other apps' response shapes stay unchanged.
+	SignalExpiry bool `yaml:"signal_expiry"`
 }
 
 // CredentialAuthConfig enables per-request validation of composite
@@ -456,7 +476,34 @@ func validateBearerAuth(appName string, ba *BearerAuthConfig) error {
 	if ba.Audience == "" {
 		return fmt.Errorf("application %q: bearer_auth.audience is required", appName)
 	}
+	seen := make(map[string]struct{}, len(ba.CORSOrigins))
+	for i, origin := range ba.CORSOrigins {
+		if !isHTTPSOrigin(origin) {
+			return fmt.Errorf("application %q: bearer_auth.cors_origins[%d] %q must be an exact https origin such as https://ui.example.com", appName, i, origin)
+		}
+		if _, ok := seen[origin]; ok {
+			return fmt.Errorf("application %q: bearer_auth.cors_origins[%d] duplicates %q", appName, i, origin)
+		}
+		seen[origin] = struct{}{}
+	}
 	return nil
+}
+
+// isHTTPSOrigin reports whether s is a serialized https origin, exactly as a
+// browser sends it in the Origin header: lowercase scheme and host, an
+// optional port, and nothing else. Origins are matched by string equality, so
+// anything a browser would never send (a path, a trailing slash, uppercase)
+// could only ever be a typo that silently matches nothing.
+func isHTTPSOrigin(s string) bool {
+	u, err := url.Parse(s)
+	if err != nil || u.Scheme != "https" || u.Host == "" {
+		return false
+	}
+	// Browsers omit the default port, and never send an empty one.
+	if u.Port() == "443" || strings.HasSuffix(u.Host, ":") {
+		return false
+	}
+	return s == "https://"+strings.ToLower(u.Host)
 }
 
 func validateCredentialAuth(appName string, app *Application) error {

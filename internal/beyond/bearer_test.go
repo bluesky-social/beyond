@@ -80,8 +80,9 @@ const (
 
 // newBearerTestHandler builds a Handler whose "skipper" app has bearer_auth
 // wired to the fake IdP, plus a cookie-only "argocd" app for cross-checks.
+// opts adjust skipper's bearer_auth before the handler is built.
 // Returns the handler, the IdP, and the backend that records what it saw.
-func newBearerTestHandler(t *testing.T) (*Handler, *bearerTestIDP, *recordingBackend) {
+func newBearerTestHandler(t *testing.T, opts ...func(*BearerAuthConfig)) (*Handler, *bearerTestIDP, *recordingBackend) {
 	t.Helper()
 	idp := newBearerTestIDP(t)
 	backend := newRecordingBackend(t)
@@ -97,6 +98,9 @@ func newBearerTestHandler(t *testing.T) (*Handler, *bearerTestIDP, *recordingBac
 			JWKSURL:  idp.jwksSrv.URL,
 			Audience: bearerTestAudience,
 		},
+	}
+	for _, opt := range opts {
+		opt(cfg.Applications["skipper"].BearerAuth)
 	}
 
 	sm := testSessionManager(t)
@@ -542,4 +546,293 @@ func TestTruncateLogErrorSplitRune(t *testing.T) {
 
 	assert.True(t, utf8.ValidString(got), "truncated value must be valid UTF-8, got %q", got)
 	assert.True(t, strings.HasSuffix(got, "(truncated)"))
+}
+
+const bearerTestUIOrigin = "https://skipper-ui.example.com"
+
+// browserClient opts skipper in to the split-origin browser behaviour that
+// GrowthBook needs: readable errors for its UI origin and an expiry signal.
+func browserClient(ba *BearerAuthConfig) {
+	ba.CORSOrigins = []string{bearerTestUIOrigin}
+	ba.SignalExpiry = true
+}
+
+func browserBearerReq(token, origin string) *http.Request {
+	req := bearerReq("skipper.example.com", token)
+	if origin != "" {
+		req.Header.Set("Origin", origin)
+	}
+	return req
+}
+
+// TestBearer_SignalExpiry pins the contract browser clients refresh on: an
+// expired token gets a JSON 401 saying "jwt expired", and every other failure
+// keeps the opaque response.
+func TestBearer_SignalExpiry(t *testing.T) {
+	t.Parallel()
+	h, idp, backend := newBearerTestHandler(t, browserClient)
+
+	t.Run("expired token", func(t *testing.T) {
+		tok := idp.mint(t, bearerTestIssuer, bearerTestAudience,
+			time.Now().Add(-time.Minute), []string{"platform"})
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, browserBearerReq(tok, bearerTestUIOrigin))
+		resp := rec.Result()
+
+		assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+		assert.Equal(t, "application/json", resp.Header.Get("Content-Type"))
+		var body struct {
+			Status  int    `json:"status"`
+			Message string `json:"message"`
+		}
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+		assert.Equal(t, http.StatusUnauthorized, body.Status)
+		assert.Equal(t, "jwt expired", body.Message)
+		assert.Equal(t, bearerTestUIOrigin, resp.Header.Get("Access-Control-Allow-Origin"))
+		assert.Nil(t, backend.last, "an expired token must not reach the upstream")
+	})
+
+	opaque := []struct {
+		name string
+		tok  string
+	}{
+		{"garbage", "not-a-jwt"},
+		{"wrong audience", idp.mint(t, bearerTestIssuer, "other-client",
+			time.Now().Add(time.Hour), []string{"platform"})},
+		{"wrong audience and expired", idp.mint(t, bearerTestIssuer, "other-client",
+			time.Now().Add(-time.Hour), []string{"platform"})},
+	}
+	for _, tc := range opaque {
+		t.Run(tc.name+" stays opaque", func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, browserBearerReq(tc.tok, bearerTestUIOrigin))
+			assert.Equal(t, http.StatusUnauthorized, rec.Result().StatusCode)
+			assert.Equal(t, "invalid token", rec.Body.String())
+		})
+	}
+}
+
+// TestBearer_ExpiredTokensStayOpaqueByDefault: without signal_expiry an
+// expired token is indistinguishable from any other failure.
+func TestBearer_ExpiredTokensStayOpaqueByDefault(t *testing.T) {
+	t.Parallel()
+	h, idp, _ := newBearerTestHandler(t, func(ba *BearerAuthConfig) {
+		ba.CORSOrigins = []string{bearerTestUIOrigin}
+	})
+
+	tok := idp.mint(t, bearerTestIssuer, bearerTestAudience,
+		time.Now().Add(-time.Minute), []string{"platform"})
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, browserBearerReq(tok, bearerTestUIOrigin))
+	assert.Equal(t, http.StatusUnauthorized, rec.Result().StatusCode)
+	assert.Equal(t, "invalid token", rec.Body.String())
+}
+
+// TestBearer_SignalExpiryDoesNotSpendFailureBudget reproduces the GrowthBook
+// lockout: tabs behind one IP whose tokens expire must not burn the failure
+// budget and 429 their own freshly refreshed requests. Other failures from the
+// same IP are still limited.
+func TestBearer_SignalExpiryDoesNotSpendFailureBudget(t *testing.T) {
+	t.Parallel()
+	h, idp, _ := newBearerTestHandler(t, browserClient)
+	const ip = "10.20.30.40:12345"
+
+	expired := idp.mint(t, bearerTestIssuer, bearerTestAudience,
+		time.Now().Add(-time.Minute), []string{"platform"})
+	for i := 0; i < bearerFailureRateLimit*2; i++ {
+		rec := httptest.NewRecorder()
+		req := browserBearerReq(expired, bearerTestUIOrigin)
+		req.RemoteAddr = ip
+		h.ServeHTTP(rec, req)
+		require.Equal(t, http.StatusUnauthorized, rec.Result().StatusCode, "expired request %d", i)
+	}
+
+	fresh := idp.mint(t, bearerTestIssuer, bearerTestAudience,
+		time.Now().Add(time.Hour), []string{"platform"})
+	rec := httptest.NewRecorder()
+	req := browserBearerReq(fresh, bearerTestUIOrigin)
+	req.RemoteAddr = ip
+	h.ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusOK, rec.Result().StatusCode, "refreshed token must not be locked out")
+
+	var saw429 bool
+	for i := 0; i < bearerFailureRateLimit+5; i++ {
+		rec := httptest.NewRecorder()
+		req := browserBearerReq("garbage-token", bearerTestUIOrigin)
+		req.RemoteAddr = ip
+		h.ServeHTTP(rec, req)
+		if rec.Result().StatusCode == http.StatusTooManyRequests {
+			saw429 = true
+			break
+		}
+	}
+	assert.True(t, saw429, "non-expiry failures must still be rate limited")
+}
+
+// TestBearer_ExpiredTokensSpendFailureBudgetByDefault pins the unchanged
+// default: without signal_expiry, expired tokens count like any failure.
+func TestBearer_ExpiredTokensSpendFailureBudgetByDefault(t *testing.T) {
+	t.Parallel()
+	h, idp, _ := newBearerTestHandler(t)
+
+	expired := idp.mint(t, bearerTestIssuer, bearerTestAudience,
+		time.Now().Add(-time.Minute), []string{"platform"})
+	var saw429 bool
+	for i := 0; i < bearerFailureRateLimit+5; i++ {
+		rec := httptest.NewRecorder()
+		req := bearerReq("skipper.example.com", expired)
+		req.RemoteAddr = "10.20.30.41:12345"
+		h.ServeHTTP(rec, req)
+		if rec.Result().StatusCode == http.StatusTooManyRequests {
+			saw429 = true
+			break
+		}
+	}
+	assert.True(t, saw429)
+}
+
+// TestBearer_CORSOrigins: beyond's own bearer responses are readable by the
+// configured UI origins and nobody else, and proxied responses keep only the
+// upstream's CORS headers.
+func TestBearer_CORSOrigins(t *testing.T) {
+	t.Parallel()
+	h, idp, _ := newBearerTestHandler(t, browserClient)
+
+	t.Run("allowed origin can read a 401", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, browserBearerReq("not-a-jwt", bearerTestUIOrigin))
+		resp := rec.Result()
+		assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+		assert.Equal(t, bearerTestUIOrigin, resp.Header.Get("Access-Control-Allow-Origin"))
+		assert.Equal(t, "true", resp.Header.Get("Access-Control-Allow-Credentials"))
+		assert.Contains(t, resp.Header.Values("Vary"), "Origin")
+	})
+
+	t.Run("other origins cannot", func(t *testing.T) {
+		for _, origin := range []string{"https://evil.example.com", "", "null"} {
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, browserBearerReq("not-a-jwt", origin))
+			resp := rec.Result()
+			assert.Empty(t, resp.Header.Get("Access-Control-Allow-Origin"), "origin %q", origin)
+			assert.Empty(t, resp.Header.Get("Access-Control-Allow-Credentials"), "origin %q", origin)
+			assert.Contains(t, resp.Header.Values("Vary"), "Origin", "origin %q", origin)
+		}
+	})
+
+	t.Run("allowed origin can read a 403", func(t *testing.T) {
+		tok := idp.mint(t, bearerTestIssuer, bearerTestAudience,
+			time.Now().Add(time.Hour), []string{"not-platform"})
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, browserBearerReq(tok, bearerTestUIOrigin))
+		resp := rec.Result()
+		assert.Equal(t, http.StatusForbidden, resp.StatusCode)
+		assert.Equal(t, bearerTestUIOrigin, resp.Header.Get("Access-Control-Allow-Origin"))
+	})
+
+	t.Run("allowed origin can read a 429", func(t *testing.T) {
+		var resp *http.Response
+		for i := 0; i < bearerFailureRateLimit+5; i++ {
+			rec := httptest.NewRecorder()
+			req := browserBearerReq("not-a-jwt", bearerTestUIOrigin)
+			req.RemoteAddr = "10.50.60.70:1234"
+			h.ServeHTTP(rec, req)
+			if resp = rec.Result(); resp.StatusCode == http.StatusTooManyRequests {
+				break
+			}
+		}
+		require.Equal(t, http.StatusTooManyRequests, resp.StatusCode)
+		assert.Equal(t, bearerTestUIOrigin, resp.Header.Get("Access-Control-Allow-Origin"))
+	})
+}
+
+// TestBearer_CORSOriginsLeaveProxiedResponsesAlone: a duplicate
+// Access-Control-Allow-Origin makes the browser reject a response, so beyond
+// must not add its own on top of the upstream's.
+func TestBearer_CORSOriginsLeaveProxiedResponsesAlone(t *testing.T) {
+	t.Parallel()
+	h, idp, _ := newBearerTestHandler(t, browserClient)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", r.Header.Get("Origin"))
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(upstream.Close)
+	h.authorizer.LookupApp("skipper.example.com").Upstream = upstream.URL
+
+	tok := idp.mint(t, bearerTestIssuer, bearerTestAudience,
+		time.Now().Add(time.Hour), []string{"platform"})
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, browserBearerReq(tok, bearerTestUIOrigin))
+	resp := rec.Result()
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Equal(t, []string{bearerTestUIOrigin}, resp.Header.Values("Access-Control-Allow-Origin"))
+	assert.Empty(t, resp.Header.Get("Access-Control-Allow-Credentials"))
+}
+
+// TestBearer_NoCORSOriginsNoCORSHeaders: the default is unchanged.
+func TestBearer_NoCORSOriginsNoCORSHeaders(t *testing.T) {
+	t.Parallel()
+	h, _, _ := newBearerTestHandler(t)
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, browserBearerReq("not-a-jwt", bearerTestUIOrigin))
+	resp := rec.Result()
+	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+	assert.Empty(t, resp.Header.Get("Access-Control-Allow-Origin"))
+	assert.Empty(t, resp.Header.Values("Vary"))
+}
+
+func TestBearerAuthConfig_CORSOriginsValidation(t *testing.T) {
+	t.Parallel()
+	conf := func(origins string) string {
+		return `
+applications:
+  skipper:
+    upstream: http://skipper.svc:80
+    host: skipper.example.com
+    allowed_groups: [platform]
+    bearer_auth:
+      issuer: https://auth.example.com/o/skipper/
+      jwks_url: http://jwks.svc/keys
+      audience: client-id
+      signal_expiry: true
+      cors_origins: ` + origins + `
+`
+	}
+
+	t.Run("exact https origins parse", func(t *testing.T) {
+		f := writeTempFile(t, conf(`[https://ui.example.com, "https://ui.example.com:8443"]`))
+		cfg, err := LoadConfig(f)
+		require.NoError(t, err)
+		ba := cfg.Applications["skipper"].BearerAuth
+		assert.Equal(t, []string{"https://ui.example.com", "https://ui.example.com:8443"}, ba.CORSOrigins)
+		assert.True(t, ba.SignalExpiry)
+	})
+
+	for _, bad := range []string{
+		"http://ui.example.com",
+		"https://ui.example.com/",
+		"https://ui.example.com/app",
+		"https://UI.example.com",
+		"https://ui.example.com:443",
+		"https://ui.example.com:",
+		"https://user@ui.example.com",
+		"https://ui.example.com?x=1",
+		"ui.example.com",
+		"*",
+		"null",
+	} {
+		t.Run(bad, func(t *testing.T) {
+			f := writeTempFile(t, conf(fmt.Sprintf("[%q]", bad)))
+			_, err := LoadConfig(f)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "cors_origins[0]")
+		})
+	}
+
+	t.Run("duplicates rejected", func(t *testing.T) {
+		f := writeTempFile(t, conf(`[https://ui.example.com, https://ui.example.com]`))
+		_, err := LoadConfig(f)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "duplicates")
+	})
 }
