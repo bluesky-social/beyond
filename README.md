@@ -87,6 +87,28 @@ delegates only credential-free `OPTIONS` requests containing both `Origin` and
 policy. Actual API requests still require Beyond's normal session or verified
 bearer token.
 
+Beyond's own bearer-path responses (401, 403, 429) carry no CORS headers, so a
+split-origin UI can't read them: the browser reports a network error. Two
+opt-in `bearer_auth` settings support browser clients:
+
+```yaml
+    bearer_auth:
+      issuer: https://auth.example.com/application/o/app/
+      jwks_url: http://authentik/application/o/app/jwks/
+      audience: app
+      cors_origins: [https://app.example.com]
+      signal_expiry: true
+```
+
+`cors_origins` lists exact https origins allowed to read the responses Beyond
+generates on the bearer path. Proxied responses keep only the upstream's CORS
+headers. `signal_expiry` answers an expired token with
+`{"status":401,"message":"jwt expired"}` (the wording clients of
+`jsonwebtoken` backends, such as GrowthBook, refresh on) instead of the opaque
+`invalid token`, and stops expired tokens from spending the failure
+budget. Only a genuinely signed token can be reported as expired, because the
+signature is verified first.
+
 `preserve_host: true` sends the configured public application hostname in the
 upstream HTTP `Host` header while still dialing `upstream`. This is useful when
 the upstream derives OAuth metadata or absolute URLs from `Host`; Beyond still

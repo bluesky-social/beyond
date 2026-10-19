@@ -28,6 +28,7 @@ package tokenverify
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/coreos/go-oidc/v3/oidc"
@@ -102,6 +103,17 @@ func (v *oidcVerifier) Verify(ctx context.Context, raw string) (*Claims, error) 
 		return nil, err
 	}
 	return &claims, nil
+}
+
+// IsExpired reports whether err from Verify means the token had expired.
+//
+// go-oidc verifies the signature before it checks any claim, and checks
+// issuer and audience before expiry, so this is true only for a genuine token
+// the IdP issued for this issuer and audience whose `exp` has passed. A forged
+// or garbage token always fails earlier with some other error.
+func IsExpired(err error) bool {
+	var expired *oidc.TokenExpiredError
+	return errors.As(err, &expired)
 }
 
 // Authorizer is AUTHORIZATION: a predicate over verified claims. A non-nil

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -91,28 +92,57 @@ func TestVerifier_SplitHorizonRoundTrip(t *testing.T) {
 
 	t.Run("wrong issuer rejected", func(t *testing.T) {
 		tok := mint("https://evil.example/", audience, time.Now().Add(time.Hour), []string{"platform"})
-		if _, err := v.Verify(context.Background(), tok); err == nil {
+		_, err := v.Verify(context.Background(), tok)
+		if err == nil {
 			t.Error("expected wrong-issuer token to be rejected")
+		}
+		if IsExpired(err) {
+			t.Errorf("wrong issuer must not read as expired: %v", err)
 		}
 	})
 
 	t.Run("wrong audience rejected", func(t *testing.T) {
 		tok := mint(issuer, "some-other-client", time.Now().Add(time.Hour), []string{"platform"})
-		if _, err := v.Verify(context.Background(), tok); err == nil {
+		_, err := v.Verify(context.Background(), tok)
+		if err == nil {
 			t.Error("expected wrong-audience token to be rejected")
+		}
+		if IsExpired(err) {
+			t.Errorf("wrong audience must not read as expired: %v", err)
 		}
 	})
 
 	t.Run("expired token rejected", func(t *testing.T) {
 		tok := mint(issuer, audience, time.Now().Add(-time.Hour), []string{"platform"})
-		if _, err := v.Verify(context.Background(), tok); err == nil {
+		_, err := v.Verify(context.Background(), tok)
+		if err == nil {
 			t.Error("expected expired token to be rejected")
+		}
+		if !IsExpired(err) {
+			t.Errorf("expected IsExpired for an expired token, got %v", err)
 		}
 	})
 
 	// Algorithm confinement: the verifier must pin RS256 (from the JWKS key's
 	// declared alg) and reject algorithm-substitution attacks. These close the
 	// alg=none / RS256<->HS256 confusion testing gap.
+	// A forged token must never read as expired, even with the right
+	// iss/aud and a past exp: callers treat IsExpired as proof the token was
+	// genuinely issued (and so safe to answer distinctly, and unable to have
+	// forced a JWKS fetch). This pins go-oidc's signature-before-claims order.
+	t.Run("expired token with bad signature is not IsExpired", func(t *testing.T) {
+		tok := mint(issuer, audience, time.Now().Add(-time.Hour), []string{"platform"})
+		parts := strings.Split(tok, ".")
+		forged := parts[0] + "." + parts[1] + ".bm90LWEtc2lnbmF0dXJl"
+		_, err := v.Verify(context.Background(), forged)
+		if err == nil {
+			t.Fatal("expected forged token to be rejected")
+		}
+		if IsExpired(err) {
+			t.Errorf("forged token must fail on its signature before expiry, got %v", err)
+		}
+	})
+
 	t.Run("alg=none rejected", func(t *testing.T) {
 		// Hand-craft an unsigned ("alg":"none") JWT with an empty signature
 		// segment and otherwise-valid claims. go-jose won't mint these, so we
