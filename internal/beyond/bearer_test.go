@@ -836,3 +836,59 @@ applications:
 		assert.Contains(t, err.Error(), "duplicates")
 	})
 }
+
+// TestBearer_FailureBudgetIsPerKeySet reproduces the cross-app lockout: a
+// client stuck retrying a dead token against one bearer app must not 429 a
+// valid token for an app with a different key set from the same IP. Apps that
+// share a jwks_url share the budget, since it guards fetches per key set.
+func TestBearer_FailureBudgetIsPerKeySet(t *testing.T) {
+	t.Parallel()
+	idp := newBearerTestIDP(t)
+	otherIDP := newBearerTestIDP(t)
+	backend := newRecordingBackend(t)
+	bearerApp := func(name, jwksURL, audience string) *Application {
+		return &Application{
+			Name:          name,
+			Upstream:      backend.srv.URL,
+			Host:          name + ".example.com",
+			AllowedGroups: []string{"platform"},
+			BearerAuth: &BearerAuthConfig{
+				Issuer:   bearerTestIssuer,
+				JWKSURL:  jwksURL,
+				Audience: audience,
+			},
+		}
+	}
+	cfg := testConfig()
+	cfg.Applications["skipper"] = bearerApp("skipper", idp.jwksSrv.URL, bearerTestAudience)
+	cfg.Applications["skipper-next"] = bearerApp("skipper-next", idp.jwksSrv.URL, bearerTestAudience)
+	cfg.Applications["other"] = bearerApp("other", otherIDP.jwksSrv.URL, "other-client-id")
+	h := NewHandler(cfg, testSessionManager(t),
+		&AccessLogger{Logger: slog.New(slog.NewJSONHandler(io.Discard, nil))})
+
+	const ip = "10.70.80.90:12345"
+	serve := func(host, token string) int {
+		rec := httptest.NewRecorder()
+		req := bearerReq(host, token)
+		req.RemoteAddr = ip
+		h.ServeHTTP(rec, req)
+		return rec.Result().StatusCode
+	}
+
+	var saw429 bool
+	for i := 0; i < bearerFailureRateLimit+5; i++ {
+		if serve("skipper.example.com", "garbage-token") == http.StatusTooManyRequests {
+			saw429 = true
+			break
+		}
+	}
+	require.True(t, saw429, "the flooded app must still be rate limited")
+
+	assert.Equal(t, http.StatusTooManyRequests, serve("skipper-next.example.com", "garbage-token"),
+		"an app sharing the flooded key set must share its budget")
+
+	tok := otherIDP.mint(t, bearerTestIssuer, "other-client-id",
+		time.Now().Add(time.Hour), []string{"platform"})
+	assert.Equal(t, http.StatusOK, serve("other.example.com", tok),
+		"another key set's failures must not lock out this app")
+}

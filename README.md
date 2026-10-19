@@ -105,7 +105,7 @@ generates on the bearer path. Proxied responses keep only the upstream's CORS
 headers. `signal_expiry` answers an expired token with
 `{"status":401,"message":"jwt expired"}` (the wording clients of
 `jsonwebtoken` backends, such as GrowthBook, refresh on) instead of the opaque
-`invalid token`, and stops expired tokens from spending the per-IP failure
+`invalid token`, and stops expired tokens from spending the failure
 budget. Only a genuinely signed token can be reported as expired, because the
 signature is verified first.
 

@@ -12,10 +12,11 @@ import (
 	"github.com/bluesky-social/beyond/tokenverify"
 )
 
-// bearerFailureRateLimit caps failed bearer verifications per source IP per
-// minute. An unknown `kid` on a token forces a synchronous JWKS re-fetch
-// (go-oidc has no negative caching), so without this cap a flood of garbage
-// JWTs with random kids becomes a fetch amplifier against Authentik.
+// bearerFailureRateLimit caps failed bearer verifications per source IP and
+// JWKS key set per minute (see bearerFailKey). An unknown `kid` on a token
+// forces a synchronous JWKS re-fetch (go-oidc has no negative caching), so
+// without this cap a flood of garbage JWTs with random kids becomes a fetch
+// amplifier against Authentik.
 // Successful verifications are not counted — a healthy CLI polling an API
 // stays under no budget.
 const bearerFailureRateLimit = 20
@@ -113,8 +114,8 @@ func (h *Handler) handleBearer(w http.ResponseWriter, r *http.Request, app *Appl
 	// so a concurrent garbage flood can't slip past a check-then-record
 	// gap and amplify JWKS fetches; successful verification refunds it, so
 	// only failures spend budget and a healthy CLI never throttles.
-	ip := sourceIP(r)
-	if !h.bearerFailLimiter.Allow(ip) {
+	failKey := bearerFailKey(sourceIP(r), app)
+	if !h.bearerFailLimiter.Allow(failKey) {
 		logEntry.Error = "bearer failure rate limit"
 		logHTTP("deny", http.StatusTooManyRequests)
 		respond("too many requests", http.StatusTooManyRequests)
@@ -150,7 +151,7 @@ func (h *Handler) handleBearer(w http.ResponseWriter, r *http.Request, app *Appl
 			// budget guards. Expiry is the routine end of a browser token's
 			// life, and charging it would let a few tabs expiring together
 			// lock their own refreshed requests out behind a 429.
-			h.bearerFailLimiter.Refund(ip)
+			h.bearerFailLimiter.Refund(failKey)
 			setBearerCORSHeaders(w, r, app)
 			beyondJSONResponse(w, jwtExpiredBody, http.StatusUnauthorized)
 			return
@@ -158,7 +159,7 @@ func (h *Handler) handleBearer(w http.ResponseWriter, r *http.Request, app *Appl
 		respond("invalid token", http.StatusUnauthorized)
 		return
 	}
-	h.bearerFailLimiter.Refund(ip)
+	h.bearerFailLimiter.Refund(failKey)
 
 	logEntry.UserEmail = claims.Email
 
@@ -229,6 +230,23 @@ func metricMethod(m string) string {
 	default:
 		return "OTHER"
 	}
+}
+
+// bearerFailKey scopes the bearer failure budget to one source IP and one
+// JWKS key set. The budget exists to cap garbage-kid re-fetches per key set,
+// so apps sharing a jwks_url (canaries, -next routes) share one bucket and an
+// IP can't multiply fetches against an endpoint by cycling through them.
+// Keying on the IP alone let one stuck client lock its whole IP out of every
+// bearer app: a `coder ssh` retrying a dead token held a user's IP over budget
+// for a week, and every GrowthBook request from that IP got 429 before its
+// valid token was checked. Requests that can't reach a verifier (unknown host,
+// cookie-only app) share the bare-IP bucket, so a caller can't mint fresh
+// buckets by varying Host.
+func bearerFailKey(ip string, app *Application) string {
+	if app == nil || app.BearerAuth == nil {
+		return ip
+	}
+	return ip + "|" + app.BearerAuth.JWKSURL
 }
 
 // jwtExpiredBody is the expired-token response for apps with signal_expiry.
