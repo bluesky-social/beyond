@@ -39,25 +39,35 @@ api() {
     printf '%s' "$out"
 }
 
-# Authentik's worker applies the default blueprints (which create the built-in
-# scope mappings) asynchronously, AFTER /-/health/ready/ passes. Configuring
-# before they land attaches an empty scope list and leaves a half-built
-# provider behind, so wait for every mapping this script needs first.
-echo "  waiting for built-in scope mappings..."
-for _ in $(seq 1 60); do
+# Authentik's worker applies the default blueprints (built-in scope mappings
+# AND the default provider flows) asynchronously, AFTER /-/health/ready/
+# passes. Configuring before they land leaves a half-built provider behind,
+# so wait for everything this script looks up first.
+blueprint_objects_missing() {
+    local missing="" slug
     # Tolerate API errors here too: this window is exactly when they happen.
-    if ! MISSING=$(api GET "/api/v3/propertymappings/provider/scope/?page_size=100" 2>/dev/null | python3 -c "
+    missing=$(api GET "/api/v3/propertymappings/provider/scope/?page_size=100" 2>/dev/null | python3 -c "
 import sys, json
 have = {r['scope_name'] for r in json.load(sys.stdin)['results']}
 print(' '.join(sorted({'openid', 'email', 'profile', 'goauthentik.io/api'} - have)))
-" 2>/dev/null); then
-        MISSING="(scope mapping API not ready)"
-    fi
+" 2>/dev/null) || missing="(scope mappings unreadable)"
+    for slug in default-provider-authorization-implicit-consent default-provider-invalidation-flow; do
+        if ! api GET "/api/v3/flows/instances/?slug=${slug}" 2>/dev/null \
+            | python3 -c "import sys,json; sys.exit(0 if json.load(sys.stdin)['results'] else 1)" 2>/dev/null; then
+            missing="${missing} ${slug}"
+        fi
+    done
+    printf '%s' "${missing# }"
+}
+
+echo "  waiting for default blueprint objects..."
+for _ in $(seq 1 60); do
+    MISSING=$(blueprint_objects_missing)
     [ -z "$MISSING" ] && break
     sleep 2
 done
 if [ -n "$MISSING" ]; then
-    echo "  ERROR: built-in scope mappings never appeared: ${MISSING}"
+    echo "  ERROR: default blueprint objects never appeared: ${MISSING}"
     exit 1
 fi
 
