@@ -3,6 +3,9 @@ on:
   push:
     branches: [main]
   pull_request:
+  # release-please.yml dispatches this for the Release PR, whose
+  # GITHUB_TOKEN-authored commits never trigger pull_request runs.
+  workflow_dispatch: {}
 
 concurrency:
   group: "${{ github.workflow }}-${{ github.head_ref || github.ref }}"
