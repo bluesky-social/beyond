@@ -1,127 +1,51 @@
 name: release-please
 
-# Push-to-main maintains a standing Release PR (bumps
-# .release-please-manifest.json, writes CHANGELOG.md). Merging it creates the
-# vX.Y.Z tag and GitHub release, builds ghcr.io/bluesky-social/beyond:vX.Y.Z,
-# and dispatches the deploy into bluesky-social/deploy (deploy-dispatch.yml
-# maps app=beyond to apps/beyond/values.yaml). Plan and rationale:
-# docs/plans/2026-10-23-release-automation.md.
+# Release automation via the org reusable workflow
+# (bluesky-social/.github .github/workflows/release-please.yml; design:
+# dot-github docs/plans/2026-10-27-unattended-dependency-releases.md).
+# Push-to-main maintains a standing Release PR. A range made only of merged
+# Renovate/Dependabot PRs merges itself on weekdays 09-16 PT; anything
+# human-authored waits for a human (label `release:manual` to hold one).
+# Merging creates the tag + GitHub release, then the release_created-gated
+# jobs below run.
 #
-# Unattended releases: the Release PR auto-merges only when every commit since
-# the last tag came from a merged Renovate PR (.github/scripts/
-# renovate-only-release.sh), during weekday hours PT. Any human change means a
-# human merges the release. Label the Release PR `release:manual` to hold it.
+# The release jobs run HERE (not on tag push) because the reusable creates
+# tags with GITHUB_TOKEN, which does not trigger another workflow.
+#
+# beyond is the front door for every *.noclues.net app (see the header of
+# deploy/apps/beyond/values.yaml), so deploy-dispatch re-checks that the
+# released tree passed test/build/lint before dispatching. Plan:
+# docs/plans/2026-10-23-release-automation.md.
 
 on:
   push:
     branches: [main]
   workflow_dispatch: {}
-  # GITHUB_TOKEN merges (the auto-merged Release PR) do not trigger push
-  # workflows; this reconciles them into a tag + deploy within the hour.
+  # Hourly across the weekday release window (UTC; covers 09-16 PT in both PST
+  # and PDT) so a dependency range merged overnight ships when it opens.
   schedule:
-    - cron: '41 * * * *'
+    - cron: '23 16-23 * * 1-5'
 
-permissions: {}
+permissions:
+  contents: write
+  pull-requests: write
 
 concurrency:
   group: release-please
   cancel-in-progress: false
 
 jobs:
-  release-please:
-    # Forks and manually selected branches must not run upstream release policy.
-    if: github.repository == 'bluesky-social/beyond' && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    permissions:
-      contents: write
-      pull-requests: write
-    outputs:
-      release_created: ${{ steps.release.outputs.release_created }}
-      tag_name: ${{ steps.release.outputs.tag_name }}
-    steps:
-      - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
-        id: release
-        with:
-          token: ${{ github.token }}
-          config-file: release-please-config.json
-          manifest-file: .release-please-manifest.json
-
-  maintenance:
-    name: Queue Renovate-only release
-    needs: release-please
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    permissions:
-      actions: write
-      contents: write
-      pull-requests: write
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          persist-credentials: false
-
-      - name: Queue or withdraw Release PR auto-merge
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-          RELEASE_BRANCH: release-please--branches--main--components--beyond
-        run: |
-          set -euo pipefail
-          release_fields='number,title,author,baseRefName,headRefName,headRefOid,isCrossRepository,files,labels,autoMergeRequest'
-          pr="$(gh pr list --base main --head "${RELEASE_BRANCH}" --state open \
-            --json "${release_fields}" --jq '.[0] // empty')"
-          if [[ -z "${pr}" ]]; then
-            exit 0
-          fi
-          number="$(jq -r '.number' <<<"${pr}")"
-          # Strict branch protection needs the Release PR on the latest main.
-          # Refresh only our own bot branch, then reread its metadata.
-          if jq -e '.isCrossRepository == false and .author.is_bot == true
-            and (.author.login == "app/github-actions" or .author.login == "github-actions[bot]")' <<<"${pr}" >/dev/null; then
-            pr="$(bash .github/scripts/refresh-release-pr.sh "${number}" "${release_fields}")"
-          fi
-          head="$(jq -r '.headRefOid' <<<"${pr}")"
-          base_version="$(gh api "repos/${GH_REPO}/contents/.release-please-manifest.json?ref=main" \
-            --jq '.content | @base64d | fromjson | .["."]')"
-
-          # Unattended deploys of the front door only while people are around.
-          dow="$(TZ=America/Los_Angeles date +%u)"
-          hour="$(TZ=America/Los_Angeles date +%H)"
-          in_hours=false
-          if (( dow <= 5 && 10#${hour} >= 9 && 10#${hour} < 16 )); then
-            in_hours=true
-          fi
-
-          if [[ "${in_hours}" == true ]] && bash .github/scripts/renovate-only-release.sh "${pr}" "${base_version}"; then
-            # A bot-created PR can have an approval-required pull_request run.
-            # Approve only this eligible release head's CI.
-            pending_ci="$(gh run list --workflow ci.yml --commit "${head}" \
-              --event pull_request --status action_required --limit 1 \
-              --json databaseId --jq '.[0].databaseId // empty')"
-            if [[ -n "${pending_ci}" ]]; then
-              gh api --method POST "repos/${GH_REPO}/actions/runs/${pending_ci}/approve"
-            fi
-            # GitHub enforces the required checks and strict protection.
-            gh pr merge "${number}" --auto --squash --match-head-commit "${head}"
-          elif [[ "$(jq '.autoMergeRequest != null' <<<"${pr}")" == true ]]; then
-            # A human commit landed, the label went on, or the window closed.
-            gh pr merge "${number}" --disable-auto
-          fi
-
-          # GITHUB_TOKEN-created PRs and branch refreshes do not trigger CI.
-          # Dispatch it only if no native or dispatched run exists; a failed
-          # run still needs human attention.
-          ci_runs="$(gh run list --workflow ci.yml --commit "${head}" \
-            --limit 100 --json event \
-            --jq '[.[] | select(.event == "pull_request" or .event == "workflow_dispatch")] | length')"
-          if [[ "${ci_runs}" == 0 ]]; then
-            gh workflow run ci.yml --ref "${RELEASE_BRANCH}"
-          fi
+  release:
+    uses: bluesky-social/.github/.github/workflows/release-please.yml@v1
+    with:
+      component: beyond
+    secrets:
+      RELEASE_APP_ID: ${{ secrets.RELEASE_APP_ID }}
+      RELEASE_APP_KEY: ${{ secrets.RELEASE_APP_KEY }}
 
   container-release:
-    needs: release-please
-    if: needs.release-please.outputs.release_created == 'true'
+    needs: release
+    if: needs.release.outputs.release_created == 'true'
     # GitHub-hosted runners only: this is a public repo (see ci.yml).
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -131,7 +55,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          ref: ${{ needs.release-please.outputs.tag_name }}
+          ref: ${{ needs.release.outputs.tag_name }}
           persist-credentials: false
 
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
@@ -146,11 +70,9 @@ jobs:
         id: meta
         with:
           images: ghcr.io/bluesky-social/beyond
-          # The release merge is a GITHUB_TOKEN push, so container-beyond.yml
-          # does not run for it; tag the sha here too.
+          # container-beyond.yml tags the sha on the release merge push.
           tags: |
-            type=raw,value=${{ needs.release-please.outputs.tag_name }}
-            type=sha,format=long
+            type=raw,value=${{ needs.release.outputs.tag_name }}
 
       - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
@@ -160,11 +82,11 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
-            VERSION=${{ needs.release-please.outputs.tag_name }}
+            VERSION=${{ needs.release.outputs.tag_name }}
 
   deploy-dispatch:
-    needs: [release-please, container-release]
-    if: needs.release-please.outputs.release_created == 'true'
+    needs: [release, container-release]
+    if: needs.release.outputs.release_created == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -179,7 +101,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          TAG: ${{ needs.release-please.outputs.tag_name }}
+          TAG: ${{ needs.release.outputs.tag_name }}
         run: |
           set -euo pipefail
           sha="$(gh api "repos/${GH_REPO}/commits/${TAG}" --jq '.sha')"
@@ -214,10 +136,10 @@ jobs:
           owner: bluesky-social
           repositories: deploy
 
-      - name: Dispatch deploy of ${{ needs.release-please.outputs.tag_name }}
+      - name: Dispatch deploy of ${{ needs.release.outputs.tag_name }}
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
-          TAG: ${{ needs.release-please.outputs.tag_name }}
+          TAG: ${{ needs.release.outputs.tag_name }}
         run: |
           gh api repos/bluesky-social/deploy/dispatches \
             -f event_type=deploy \

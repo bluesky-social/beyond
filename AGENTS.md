@@ -44,7 +44,9 @@ that may include Zen 4.
 
 Releases are release-please (`release-please.yml`); merging the Release PR
 tags `vX.Y.Z` and deploys it to prod via `bluesky-social/deploy`'s
-deploy-dispatch. Release PRs whose range is entirely Renovate commits
-auto-merge on weekday hours; anything human-authored waits for a human. Label
-a Release PR `release:manual` to hold it. Rationale and sharp edges:
-`docs/plans/2026-10-23-release-automation.md`.
+deploy-dispatch. The mechanics are the org reusable workflow
+(`bluesky-social/.github`, `docs/plans/2026-10-27-unattended-dependency-releases.md`):
+Release PRs whose range is entirely Renovate/Dependabot commits auto-merge on
+weekday hours; anything human-authored waits for a human. Label a Release PR
+`release:manual` to hold it. beyond-specific rationale (front-door constraint,
+deploy-time CI re-check): `docs/plans/2026-10-23-release-automation.md`.

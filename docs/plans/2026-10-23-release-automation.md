@@ -1,6 +1,15 @@
 # Release automation: release-please, Renovate, unattended dependency deploys
 
-Status: implemented 2026-10-23.
+Status: implemented 2026-10-23. **Generalized 2026-10-27** into the org
+pipeline (`bluesky-social/.github`
+`docs/plans/2026-10-27-unattended-dependency-releases.md`): the gate scripts,
+release-please run and Renovate policy now live there, the Release PR is
+maintained and merged by the `bsky-release-bot` App, so the hourly reconcile
+cron and CI dispatch below are gone, and Dependabot-authored commits also
+count as bot provenance. `automergeSchedule` turned out to be inert with
+`platformAutomerge` (Renovate docs), so the weekday window lives only in the
+release gate. What stays beyond-specific: the front-door framing and the
+deploy-time CI re-check in `deploy-dispatch`.
 
 ## Goal
 
