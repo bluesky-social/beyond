@@ -1,0 +1,148 @@
+name: release-please
+
+# Release automation via the org reusable workflow
+# (bluesky-social/.github .github/workflows/release-please.yml; design:
+# dot-github docs/plans/2026-10-27-unattended-dependency-releases.md).
+# Push-to-main maintains a standing Release PR. A range made only of merged
+# Renovate/Dependabot PRs merges itself on weekdays 09-16 PT; anything
+# human-authored waits for a human (label `release:manual` to hold one).
+# Merging creates the tag + GitHub release, then the release_created-gated
+# jobs below run.
+#
+# The release jobs run HERE (not on tag push) because the reusable creates
+# tags with GITHUB_TOKEN, which does not trigger another workflow.
+#
+# beyond is the front door for every *.noclues.net app (see the header of
+# deploy/apps/beyond/values.yaml), so deploy-dispatch re-checks that the
+# released tree passed test/build/lint before dispatching. Plan:
+# docs/plans/2026-10-23-release-automation.md.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+  # Hourly across the weekday release window (UTC; covers 09-16 PT in both PST
+  # and PDT) so a dependency range merged overnight ships when it opens.
+  schedule:
+    - cron: '23 16-23 * * 1-5'
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: release-please
+  cancel-in-progress: false
+
+jobs:
+  release:
+    uses: bluesky-social/.github/.github/workflows/release-please.yml@v1
+    with:
+      component: beyond
+    secrets:
+      RELEASE_APP_ID: ${{ secrets.RELEASE_APP_ID }}
+      RELEASE_APP_KEY: ${{ secrets.RELEASE_APP_KEY }}
+
+  container-release:
+    needs: release
+    if: needs.release.outputs.release_created == 'true'
+    # GitHub-hosted runners only: this is a public repo (see ci.yml).
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.release.outputs.tag_name }}
+          persist-credentials: false
+
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
+        id: meta
+        with:
+          images: ghcr.io/bluesky-social/beyond
+          # container-beyond.yml tags the sha on the release merge push.
+          tags: |
+            type=raw,value=${{ needs.release.outputs.tag_name }}
+
+      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          file: ./cmd/beyond/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VERSION=${{ needs.release.outputs.tag_name }}
+
+  deploy-dispatch:
+    needs: [release, container-release]
+    if: needs.release.outputs.release_created == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      checks: read
+      pull-requests: read
+    steps:
+      # Admins can bypass branch protection, so check rather than assume: the
+      # released tree must be exactly a PR head on which test, build and lint
+      # all passed.
+      - name: Verify full CI passed for the released tree
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.release.outputs.tag_name }}
+        run: |
+          set -euo pipefail
+          sha="$(gh api "repos/${GH_REPO}/commits/${TAG}" --jq '.sha')"
+          head="$(gh api "repos/${GH_REPO}/commits/${sha}/pulls" \
+            --jq '[.[] | select(.merged_at != null and .base.ref == "main")][0].head.sha // empty')"
+          if [[ -z "${head}" ]]; then
+            echo "::error::${TAG} (${sha}) did not come from a merged PR; refusing to deploy"
+            exit 1
+          fi
+          released_tree="$(gh api "repos/${GH_REPO}/git/commits/${sha}" --jq '.tree.sha')"
+          tested_tree="$(gh api "repos/${GH_REPO}/git/commits/${head}" --jq '.tree.sha')"
+          if [[ "${released_tree}" != "${tested_tree}" ]]; then
+            echo "::error::${TAG} tree differs from the tested PR head ${head}; refusing to deploy"
+            exit 1
+          fi
+          for check in test build lint; do
+            conclusion="$(gh api "repos/${GH_REPO}/commits/${head}/check-runs?check_name=${check}&filter=latest" \
+              --jq '[.check_runs[] | select(.app.slug == "github-actions")][0].conclusion // "missing"')"
+            if [[ "${conclusion}" != success ]]; then
+              echo "::error::check '${check}' on ${head} is ${conclusion}; refusing to deploy"
+              exit 1
+            fi
+          done
+          echo "${TAG} is tree-identical to ${head}, which passed test, build and lint"
+
+      - name: Mint deploy-dispatch App token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
+        id: app-token
+        with:
+          app-id: ${{ secrets.DEPLOY_DISPATCH_APP_ID }}
+          private-key: ${{ secrets.DEPLOY_DISPATCH_APP_KEY }}
+          owner: bluesky-social
+          repositories: deploy
+
+      - name: Dispatch deploy of ${{ needs.release.outputs.tag_name }}
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          TAG: ${{ needs.release.outputs.tag_name }}
+        run: |
+          gh api repos/bluesky-social/deploy/dispatches \
+            -f event_type=deploy \
+            -f 'client_payload[app]=beyond' \
+            -f "client_payload[tag]=$TAG"
+          echo "Dispatched deploy of beyond $TAG to bluesky-social/deploy"

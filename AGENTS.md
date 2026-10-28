@@ -39,3 +39,14 @@ Go 1.26.0–1.26.4's Green Tea GC SIGILLed on Zen 4 CPUs (e.g. AWS
 1.26.5 via backport #79920. `go.mod` requires 1.26.5 for exactly this
 reason — never lower the directive below it when deploying to hosts
 that may include Zen 4.
+
+## Releases and deploys
+
+Releases are release-please (`release-please.yml`); merging the Release PR
+tags `vX.Y.Z` and deploys it to prod via `bluesky-social/deploy`'s
+deploy-dispatch. The mechanics are the org reusable workflow
+(`bluesky-social/.github`, `docs/plans/2026-10-27-unattended-dependency-releases.md`):
+Release PRs whose range is entirely Renovate/Dependabot commits auto-merge on
+weekday hours; anything human-authored waits for a human. Label a Release PR
+`release:manual` to hold it. beyond-specific rationale (front-door constraint,
+deploy-time CI re-check): `docs/plans/2026-10-23-release-automation.md`.

@@ -26,13 +26,50 @@ fi
 echo "  got API token"
 
 api() {
-    local method="$1" path="$2"
+    local method="$1" path="$2" out
     shift 2
-    curl -sf --connect-timeout 2 --max-time 15 -X "$method" "${AUTHENTIK_URL}${path}" \
+    # --fail-with-body so a rejected call says why instead of dying silently.
+    if ! out=$(curl -sS --fail-with-body --connect-timeout 2 --max-time 15 -X "$method" "${AUTHENTIK_URL}${path}" \
         -H "Content-Type: application/json" \
         -H "Authorization: Bearer ${TOKEN}" \
-        "$@"
+        "$@"); then
+        echo "  ERROR: ${method} ${path}: ${out}" >&2
+        return 1
+    fi
+    printf '%s' "$out"
 }
+
+# Authentik's worker applies the default blueprints (built-in scope mappings
+# AND the default provider flows) asynchronously, AFTER /-/health/ready/
+# passes. Configuring before they land leaves a half-built provider behind,
+# so wait for everything this script looks up first.
+blueprint_objects_missing() {
+    local missing="" slug
+    # Tolerate API errors here too: this window is exactly when they happen.
+    missing=$(api GET "/api/v3/propertymappings/provider/scope/?page_size=100" 2>/dev/null | python3 -c "
+import sys, json
+have = {r['scope_name'] for r in json.load(sys.stdin)['results']}
+print(' '.join(sorted({'openid', 'email', 'profile', 'goauthentik.io/api'} - have)))
+" 2>/dev/null) || missing="(scope mappings unreadable)"
+    for slug in default-provider-authorization-implicit-consent default-provider-invalidation-flow; do
+        if ! api GET "/api/v3/flows/instances/?slug=${slug}" 2>/dev/null \
+            | python3 -c "import sys,json; sys.exit(0 if json.load(sys.stdin)['results'] else 1)" 2>/dev/null; then
+            missing="${missing} ${slug}"
+        fi
+    done
+    printf '%s' "${missing# }"
+}
+
+echo "  waiting for default blueprint objects..."
+for _ in $(seq 1 60); do
+    MISSING=$(blueprint_objects_missing)
+    [ -z "$MISSING" ] && break
+    sleep 2
+done
+if [ -n "$MISSING" ]; then
+    echo "  ERROR: default blueprint objects never appeared: ${MISSING}"
+    exit 1
+fi
 
 # Get the default authorization flow (implicit consent).
 echo "  finding authorization flow..."
@@ -56,10 +93,12 @@ fi
 
 # Get scope mapping PKs.
 echo "  finding scope mappings..."
-SCOPE_MAPPINGS=$(api GET "/api/v3/propertymappings/provider/scope/?scope_name__in=openid,email,profile" | python3 -c "
+# Filter client-side: the API silently ignores `scope_name__in` and returns
+# every mapping, which put goauthentik.io/api on the login client.
+SCOPE_MAPPINGS=$(api GET "/api/v3/propertymappings/provider/scope/?page_size=100" | python3 -c "
 import sys, json
 results = json.load(sys.stdin)['results']
-pks = [r['pk'] for r in results]
+pks = [r['pk'] for r in results if r['scope_name'] in ('openid', 'email', 'profile')]
 print(json.dumps(pks))
 ")
 echo "  scopes: ${SCOPE_MAPPINGS}"
@@ -124,9 +163,9 @@ fi
 EXISTING_APP_JSON=$(api GET "/api/v3/core/applications/?slug=beyond-dev")
 EXISTING_APP=$(echo "$EXISTING_APP_JSON" | python3 -c "import sys,json; print(len(json.load(sys.stdin)['results']))")
 if [ "$EXISTING_APP" != "0" ]; then
-    APP_PK=$(echo "$EXISTING_APP_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin)['results'][0]['pk'])")
-    echo "  updating existing application (pk: ${APP_PK})..."
-    api PATCH "/api/v3/core/applications/${APP_PK}/" -d "{
+    # The applications endpoint is keyed by slug, not pk (pk 404s).
+    echo "  updating existing application (slug: beyond-dev)..."
+    api PATCH "/api/v3/core/applications/beyond-dev/" -d "{
         \"provider\": ${PROVIDER_PK},
         \"meta_launch_url\": \"https://localhost:8443\"
     }" > /dev/null
