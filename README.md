@@ -180,6 +180,40 @@ or locally trust that certificate when using a browser. Sign in with
 
 Unit tests need no infrastructure; e2e/DB tests want the dev stack up and skip themselves otherwise. The dev Authentik login is `test@beyond.local` / `test`.
 
+## Releases and commit messages
+
+Releases are cut by [release-please](https://github.com/googleapis/release-please)
+through the org release pipeline ([onboarding guide](https://github.com/bluesky-social/.github/blob/main/docs/reference/release-please-onboarding.md)).
+
+**Commit messages need a `type:` prefix, but any word works.** With
+`changelog-type: github`, any commit shaped `type: subject` is releasable
+(always a patch bump): `feat:`, `fix:`, or a subsystem prefix like `ask:`
+all count. A message with no prefix (`Add summarize shortcut`) can't be
+parsed and is dropped; if nothing since the last release parses, nothing
+releases. PRs are squash-merged, so the PR title becomes the commit: give it
+a prefix, and write it as the changelog line you want, since release notes
+are built from merged PR titles. Direct pushes appear only in the release's
+compare link.
+
+**How a release happens.** Every push to `main` updates a standing
+`chore(main): release X.Y.Z` PR maintained by `bsky-release-bot`. Merging it
+tags `vX.Y.Z` and builds `ghcr.io/bluesky-social/beyond:vX.Y.Z` and, after re-checking that the released tree passed `test`, `build` and `lint`, dispatches the deploy into `bluesky-social/deploy`.
+
+- If every commit since the last tag came from a merged Renovate or
+  Dependabot PR, the Release PR merges itself on the hourly run, weekdays
+  09:00-16:00 PT. Otherwise a human merges it.
+- Any human-authored commit in that range, even one that doesn't release on
+  its own, means a human merges the next Release PR.
+- Label the Release PR `release:manual` to hold a release.
+
+**Dependencies** come from Renovate with the [org preset](https://github.com/bluesky-social/.github/blob/main/renovate/default.json)
+(`renovate.json`). Don't push to a Renovate PR or click "Update branch" on
+one: that adds a human commit, so the next release needs a human. If a bump
+needs code changes, make them in a separate PR.
+
+**CI.** `main` requires `test`, `build` and `lint` to pass, and PRs must be up to date with
+`main` before they merge.
+
 ## License
 
 Dual MIT/Apache-2.0, see [LICENSE-DUAL](LICENSE-DUAL).
