@@ -1,6 +1,6 @@
 name: release-please
 
-# Release automation via the org reusable workflow
+# Release automation: an inline copy of the org reusable workflow
 # (bluesky-social/.github .github/workflows/release-please.yml; design:
 # dot-github docs/plans/2026-10-27-unattended-dependency-releases.md).
 # Push-to-main maintains a standing Release PR. A range made only of merged
@@ -35,13 +35,85 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # Inline copy of bluesky-social/.github's reusable release-please.yml:
+  # beyond is public, and public repos cannot call reusable workflows that
+  # live in an internal repo. The gate scripts are still the shared ones,
+  # checked out from .github@v1 with the release App's read-only token.
+  # Keep these steps in sync with the reusable.
   release:
-    uses: bluesky-social/.github/.github/workflows/release-please.yml@v1
-    with:
-      component: beyond
-    secrets:
-      RELEASE_APP_ID: ${{ secrets.RELEASE_APP_ID }}
-      RELEASE_APP_KEY: ${{ secrets.RELEASE_APP_KEY }}
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    concurrency:
+      group: release-please-reusable-${{ github.repository }}
+      cancel-in-progress: false
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
+    steps:
+      - name: Cut any merged release
+        id: release
+        uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+        with:
+          token: ${{ github.token }}
+          skip-github-pull-request: true
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+      - name: Mint release App token
+        id: app-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_KEY }}
+
+      - name: Mint read-only token for the gate scripts
+        id: gate-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_KEY }}
+          owner: bluesky-social
+          repositories: .github
+          permission-contents: read
+
+      - name: Check out the gate scripts
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: bluesky-social/.github
+          ref: v1
+          token: ${{ steps.gate-token.outputs.token }}
+          path: .release-gate
+          sparse-checkout: actions/release-gate
+          persist-credentials: false
+
+      - name: Disarm before touching the Release PR
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_REPO: ${{ github.repository }}
+          APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
+          RELEASE_BRANCH: release-please--branches--main--components--beyond
+          MANIFEST_FILE: .release-please-manifest.json
+          MODE: disarm
+        run: bash .release-gate/actions/release-gate/gate.sh
+
+      - name: Maintain the Release PR
+        uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          skip-github-release: true
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+      - name: Queue unattended dependency release
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_REPO: ${{ github.repository }}
+          APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
+          RELEASE_BRANCH: release-please--branches--main--components--beyond
+          MANIFEST_FILE: .release-please-manifest.json
+          MODE: gate
+        run: bash .release-gate/actions/release-gate/gate.sh
 
   container-release:
     needs: release
