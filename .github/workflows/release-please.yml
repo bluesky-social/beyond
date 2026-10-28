@@ -60,7 +60,11 @@ jobs:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
 
+      # Everything below is best-effort once a release has been cut: a failure
+      # here must not fail this job, or the release jobs (image, deploy) are
+      # skipped and the tag ships with nothing deployed.
       - name: Mint release App token
+        continue-on-error: ${{ steps.release.outputs.release_created == 'true' }}
         id: app-token
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
@@ -68,6 +72,7 @@ jobs:
           private-key: ${{ secrets.RELEASE_APP_KEY }}
 
       - name: Mint read-only token for the gate scripts
+        continue-on-error: ${{ steps.release.outputs.release_created == 'true' }}
         id: gate-token
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
@@ -78,6 +83,7 @@ jobs:
           permission-contents: read
 
       - name: Check out the gate scripts
+        continue-on-error: ${{ steps.release.outputs.release_created == 'true' }}
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: bluesky-social/.github
@@ -88,6 +94,7 @@ jobs:
           persist-credentials: false
 
       - name: Disarm before touching the Release PR
+        continue-on-error: ${{ steps.release.outputs.release_created == 'true' }}
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           GH_REPO: ${{ github.repository }}
@@ -98,6 +105,7 @@ jobs:
         run: bash .release-gate/actions/release-gate/gate.sh
 
       - name: Maintain the Release PR
+        continue-on-error: ${{ steps.release.outputs.release_created == 'true' }}
         uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
         with:
           token: ${{ steps.app-token.outputs.token }}
@@ -106,6 +114,7 @@ jobs:
           manifest-file: .release-please-manifest.json
 
       - name: Queue unattended dependency release
+        continue-on-error: ${{ steps.release.outputs.release_created == 'true' }}
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           GH_REPO: ${{ github.repository }}
