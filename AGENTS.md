@@ -36,9 +36,9 @@ proxy, and a mistake here is an auth bypass, not a bug.
 Go 1.26.0–1.26.4's Green Tea GC SIGILLed on Zen 4 CPUs (e.g. AWS
 `m7a`/`c7a`/`r7a` instances):
 [golang/go#79871](https://github.com/golang/go/issues/79871), fixed in
-1.26.5 via backport #79920. `go.mod` requires 1.26.5 for exactly this
-reason — never lower the directive below it when deploying to hosts
-that may include Zen 4.
+1.26.5 via backport #79920. `go.mod` is on 1.27.3 (the org CI baseline);
+never lower the directive below 1.26.5 when deploying to hosts that may
+include Zen 4.
 
 ## Releases and deploys
 

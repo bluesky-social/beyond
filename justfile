@@ -7,7 +7,7 @@ default: lint test
 
 # Ensures that all tools required for local development are installed
 install-tools:
-    go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.10.1
+    go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.15.0
     go install gotest.tools/gotestsum@v1.13.0
 
 # Generates the development-only TLS certificate used by Beyond. Keeping local
