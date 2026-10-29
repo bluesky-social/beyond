@@ -27,8 +27,7 @@ on:
     - cron: '23 16-23 * * 1-5'
 
 permissions:
-  contents: write
-  pull-requests: write
+  contents: read
 
 concurrency:
   group: release-please
@@ -39,7 +38,7 @@ jobs:
   # beyond is public, and public repos cannot call reusable workflows that
   # live in an internal repo. The gate scripts are still the shared ones,
   # checked out from .github@v1 with the release App's read-only token.
-  # Keep these steps in sync with the reusable.
+  # Keep these steps, runs-on and permissions in sync with the reusable.
   release:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
@@ -47,6 +46,9 @@ jobs:
     concurrency:
       group: release-please-reusable-${{ github.repository }}
       cancel-in-progress: false
+    permissions:
+      contents: write
+      pull-requests: write
     outputs:
       release_created: ${{ steps.release.outputs.release_created }}
       tag_name: ${{ steps.release.outputs.tag_name }}
@@ -128,7 +130,7 @@ jobs:
     needs: release
     if: needs.release.outputs.release_created == 'true'
     # GitHub-hosted runners only: this is a public repo (see ci.yml).
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 20
     permissions:
       contents: read
@@ -168,7 +170,7 @@ jobs:
   deploy-dispatch:
     needs: [release, container-release]
     if: needs.release.outputs.release_created == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     permissions:
       contents: read

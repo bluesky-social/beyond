@@ -19,12 +19,15 @@ jobs:
   test:
     # GitHub-hosted runners only: this is a public repo, and fork PRs must
     # never land on self-hosted infrastructure.
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
+    timeout-minutes: 15
     steps:
       - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4
 
       - name: Git Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
 
       - name: Set up Go tooling
         uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
@@ -48,12 +51,15 @@ jobs:
         run: just down
 
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
     steps:
       - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4
 
       - name: Git Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
 
       - name: Set up Go tooling
         uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
@@ -65,12 +71,15 @@ jobs:
         run: just build
 
   lint:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
     steps:
       - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4
 
       - name: Git Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
 
       - name: Set up Go tooling
         uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
@@ -83,3 +92,93 @@ jobs:
 
       - name: Lint
         run: just lint
+
+  # govulncheck, gitleaks and actionlint: inline copy of the jobs in
+  # bluesky-social/.github's reusable security.yml (design: that repo's
+  # docs/plans/2026-10-28-ci-baseline.md). beyond is public, and public repos
+  # cannot call reusable workflows that live in an internal repo. Keep these
+  # jobs, including the tool versions, in sync with the reusable.
+  govulncheck:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    env:
+      GOVULNCHECK: golang.org/x/vuln/cmd/govulncheck@v1.9.0
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Check reachable vulnerabilities
+        run: go run "${GOVULNCHECK}" ./...
+
+  # Secrets in the commits this push or PR adds (not full history).
+  gitleaks:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    env:
+      GITLEAKS: github.com/zricethezav/gitleaks/v8@v8.30.1
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: '1.27.3'
+          cache: false
+      - name: Scan new commits for secrets
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          BEFORE: ${{ github.event.before }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [[ "${EVENT}" == pull_request* && -n "${PR_BASE}" ]]; then
+            range="${PR_BASE}..${PR_HEAD}"
+          elif [[ "${EVENT}" == push && -n "${BEFORE}" && ! "${BEFORE}" =~ ^0+$ ]] \
+            && git cat-file -e "${BEFORE}^{commit}" 2>/dev/null; then
+            range="${BEFORE}..${SHA}"
+          else
+            range="${SHA}~1..${SHA}"
+          fi
+          echo "scanning ${range}"
+          go run "${GITLEAKS}" git --redact --no-banner --log-opts="${range}" .
+
+  # Workflow bugs, plus shellcheck over every run: block.
+  actionlint:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    env:
+      ACTIONLINT: github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: '1.27.3'
+          cache: false
+      - name: Lint workflows
+        run: |
+          set -euo pipefail
+          command -v shellcheck >/dev/null || sudo apt-get install -y -qq shellcheck
+          # Our self-hosted labels, plus hosted labels newer than actionlint.
+          config="${RUNNER_TEMP}/actionlint.yaml"
+          {
+            echo 'self-hosted-runner:'
+            echo '  labels:'
+            for label in arc kvm cpu3-pop3 ubuntu-26.04; do
+              echo "    - ${label}"
+            done
+          } >"${config}"
+          go run "${ACTIONLINT}" -config-file "${config}"

@@ -7,7 +7,7 @@
       "include-component-in-tag": false,
       "changelog-type": "github",
       "changelog-path": "CHANGELOG.md",
-      "versioning": "always-bump-patch"
+      "bump-minor-pre-major": true
     }
   }
 }

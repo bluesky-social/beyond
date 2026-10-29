@@ -1,6 +1,6 @@
 module github.com/bluesky-social/beyond
 
-go 1.26.10
+go 1.27.3
 
 require (
 	github.com/ClickHouse/clickhouse-go/v2 v2.48.0
