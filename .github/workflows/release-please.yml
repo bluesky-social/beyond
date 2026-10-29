@@ -41,7 +41,7 @@ jobs:
   # Keep these steps, runs-on and permissions in sync with the reusable.
   release:
     if: github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 15
     concurrency:
       group: release-please-reusable-${{ github.repository }}
