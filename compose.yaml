@@ -2,7 +2,7 @@ name: beyond
 
 services:
   postgres:
-    image: postgres:17-alpine
+    image: postgres:17-alpine@sha256:266d3c257594e195b309ae9d1805e54c788f1d7b375f56bf6c367aac6c917e7b
     environment:
       POSTGRES_USER: beyond
       POSTGRES_PASSWORD: beyond
@@ -19,7 +19,7 @@ services:
       retries: 10
 
   clickhouse:
-    image: clickhouse/clickhouse-server:25.8-alpine
+    image: clickhouse/clickhouse-server:25.8-alpine@sha256:87e0a5b72f5465b18eacca7c76850e7ff551c9795c50e451f5646299e5e24146
     environment:
       CLICKHOUSE_DB: beyond
       CLICKHOUSE_USER: beyond
@@ -77,7 +77,7 @@ services:
         condition: service_started
 
   echo:
-    image: ealen/echo-server:0.9.2
+    image: ealen/echo-server:0.9.2@sha256:006b92e1d6682442e29d1d0d73c34a61166d42f8a5bf1ea10c318f07ad4790e2
     ports:
       - "18080:18080"
     environment:
