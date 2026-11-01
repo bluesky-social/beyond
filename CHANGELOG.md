@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.1.3 (2026-11-01)
+
+## What's Changed
+* fix(deps): pin dependencies by @renovate[bot] in https://github.com/bluesky-social/beyond/pull/21
+* ci: call the shared release-please workflow by @amckinley in https://github.com/bluesky-social/beyond/pull/19
+* fix(deps): update module github.com/go-jose/go-jose/v4 to v4.1.6 [security] by @renovate[bot] in https://github.com/bluesky-social/beyond/pull/20
+* ci: call the shared pr-title workflow by @amckinley in https://github.com/bluesky-social/beyond/pull/24
+* fix(deps): pin redis docker tag to 8da19c7 by @renovate[bot] in https://github.com/bluesky-social/beyond/pull/25
+
+## New Contributors
+* @renovate[bot] made their first contribution in https://github.com/bluesky-social/beyond/pull/21
+
+**Full Changelog**: https://github.com/bluesky-social/beyond/compare/v0.1.2...v0.1.3
+
 ## 0.1.2 (2026-10-29)
 
 ## What's Changed
