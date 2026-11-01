@@ -1,16 +1,10 @@
 name: pr-title
 
 # PR titles become squash-merge commit messages, and release-please drops any
-# commit without a `type:` prefix. This makes the prefix a required check. Any
-# type word works: `feat:`, `fix(api):`, `docs:`, `ask:`; `!` before the colon
-# marks a breaking change. Design: bluesky-social/.github
-# docs/plans/2026-10-28-ci-baseline.md.
+# commit without a `type:` prefix. The org reusable workflow makes the prefix a
+# required check (bluesky-social/.github .github/workflows/pr-title.yml).
 #
-# Inline copy of bluesky-social/.github's reusable pr-title.yml: beyond is
-# public, and public repos cannot call reusable workflows that live in an
-# internal repo. Keep this job in sync with the reusable.
-#
-# Required check: `pr-title`.
+# Required check: `pr-title / pr-title`.
 
 on:
   pull_request:
@@ -20,19 +14,4 @@ permissions: {}
 
 jobs:
   pr-title:
-    runs-on: ubuntu-26.04
-    timeout-minutes: 2
-    permissions: {}
-    steps:
-      - name: Require a type prefix
-        env:
-          TITLE: ${{ github.event.pull_request.title }}
-        run: |
-          set -euo pipefail
-          pattern='^[A-Za-z][A-Za-z0-9_-]*(\([^)]+\))?!?: [^[:space:]]'
-          if [[ "${TITLE}" =~ ${pattern} ]]; then
-            echo "ok: ${TITLE}"
-            exit 0
-          fi
-          echo "::error::PR title needs a type prefix, e.g. 'fix: ...', 'feat(api): ...', 'docs: ...'. release-please drops commits without one, so this change would never be released."
-          exit 1
+    uses: bluesky-social/.github/.github/workflows/pr-title.yml@v1
