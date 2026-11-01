@@ -183,7 +183,7 @@ Unit tests need no infrastructure; e2e/DB tests want the dev stack up and skip t
 ## Releases and commit messages
 
 Releases are cut by [release-please](https://github.com/googleapis/release-please)
-through the org release pipeline ([onboarding guide](https://github.com/bluesky-social/.github/blob/main/docs/reference/release-please-onboarding.md)).
+through the org release pipeline ([shared workflow](https://github.com/bluesky-social/.github#release-pleaseyml-and-actionsrelease-gate)).
 
 **Commit messages need a `type:` prefix, but any word works.** PRs are
 squash-merged, so the PR title becomes the commit, and a required
@@ -196,7 +196,7 @@ changelog line you want. Direct pushes appear only in the release's
 compare link.
 
 **How a release happens.** Every push to `main` updates a standing
-`chore(main): release X.Y.Z` PR maintained by `bsky-release-bot`. Merging it
+`chore(main): release X.Y.Z` PR maintained by `bsky-public-release-bot`. Merging it
 tags `vX.Y.Z` and builds `ghcr.io/bluesky-social/beyond:vX.Y.Z` and, after re-checking that the released tree passed `test`, `build` and `lint`, dispatches the deploy into `bluesky-social/deploy`.
 
 - If every commit since the last tag came from a merged Renovate or
