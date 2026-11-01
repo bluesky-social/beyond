@@ -187,7 +187,7 @@ through the org release pipeline ([shared workflow](https://github.com/bluesky-s
 
 **Commit messages need a `type:` prefix, but any word works.** PRs are
 squash-merged, so the PR title becomes the commit, and a required
-`pr-title` check enforces the prefix. release-please drops commits without
+`pr-title / pr-title` check enforces the prefix. release-please drops commits without
 one. `feat:` releases a minor version, a breaking change (`feat!:`, or a
 `BREAKING CHANGE:` footer) a major one (a minor while the version is 0.x),
 and anything else, including subsystem prefixes like `ask:`, a patch.
@@ -211,7 +211,7 @@ tags `vX.Y.Z` and builds `ghcr.io/bluesky-social/beyond:vX.Y.Z` and, after re-ch
 one: that adds a human commit, so the next release needs a human. If a bump
 needs code changes, make them in a separate PR.
 
-**CI.** `main` requires `test`, `build`, `lint`, `pr-title`, `govulncheck`,
+**CI.** `main` requires `test`, `build`, `lint`, `pr-title / pr-title`, `govulncheck`,
 `gitleaks` and `actionlint` to pass, and PRs must be up to date with `main`
 before they merge.
 
