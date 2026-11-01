@@ -9,7 +9,10 @@ cron and CI dispatch below are gone, and Dependabot-authored commits also
 count as bot provenance. `automergeSchedule` turned out to be inert with
 `platformAutomerge` (Renovate docs), so the weekday window lives only in the
 release gate. What stays beyond-specific: the front-door framing and the
-deploy-time CI re-check in `deploy-dispatch`.
+deploy-time CI re-check in `deploy-dispatch`. **2026-10-31:** with
+`bluesky-social/.github` public, `release-please.yml` calls its reusable
+workflow directly instead of an inline copy, and the Release PR moved to the
+public-repo `bsky-public-release-bot` App.
 
 ## Goal
 
