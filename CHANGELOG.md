@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.4 (2026-11-02)
+
+## What's Changed
+* fix(deps): update go dependencies by @renovate[bot] in https://github.com/bluesky-social/beyond/pull/27
+* fix(deps): update clickhouse/clickhouse-server docker tag to v25.12 by @renovate[bot] in https://github.com/bluesky-social/beyond/pull/26
+* fix(deps): update go dependencies by @renovate[bot] in https://github.com/bluesky-social/beyond/pull/30
+* fix(deps): update module github.com/prometheus/common to v0.73.1 by @renovate[bot] in https://github.com/bluesky-social/beyond/pull/34
+
+
+**Full Changelog**: https://github.com/bluesky-social/beyond/compare/v0.1.3...v0.1.4
+
 ## 0.1.3 (2026-11-01)
 
 ## What's Changed
