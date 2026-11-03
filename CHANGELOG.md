@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.5 (2026-11-03)
+
+## What's Changed
+* fix(deps): update go dependencies by @renovate[bot] in https://github.com/bluesky-social/beyond/pull/35
+
+
+**Full Changelog**: https://github.com/bluesky-social/beyond/compare/v0.1.4...v0.1.5
+
 ## 0.1.4 (2026-11-02)
 
 ## What's Changed
