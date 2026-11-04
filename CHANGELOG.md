@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.8 (2026-11-04)
+
+## What's Changed
+* fix(deps): update module github.com/paulmach/orb to v0.14.0 by @renovate[bot] in https://github.com/bluesky-social/beyond/pull/41
+
+
+**Full Changelog**: https://github.com/bluesky-social/beyond/compare/v0.1.7...v0.1.8
+
 ## 0.1.7 (2026-11-04)
 
 ## What's Changed
