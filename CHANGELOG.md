@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.7 (2026-11-04)
+
+## What's Changed
+* fix(deps): update module go.yaml.in/yaml/v3 to v3.0.6 by @renovate[bot] in https://github.com/bluesky-social/beyond/pull/39
+
+
+**Full Changelog**: https://github.com/bluesky-social/beyond/compare/v0.1.6...v0.1.7
+
 ## 0.1.6 (2026-11-03)
 
 ## What's Changed
