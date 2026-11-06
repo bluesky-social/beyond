@@ -32,6 +32,10 @@ type SessionData struct {
 	ExpiresAt time.Time `json:"expires_at"`
 	Type      string    `json:"type,omitempty"`
 
+	// DID is the user's atproto DID, or empty. Sessions issued before the
+	// field existed decode with no DID.
+	DID string `json:"did,omitempty"`
+
 	// OIDC state fields (only populated when Type == tokenTypeOIDCState).
 	OIDCState       string `json:"oidc_state,omitempty"`
 	OIDCVerifier    string `json:"oidc_verifier,omitempty"`

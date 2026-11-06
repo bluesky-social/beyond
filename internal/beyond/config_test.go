@@ -467,3 +467,38 @@ func TestLoadConfig_FileNotFound(t *testing.T) {
 	_, err := LoadConfig(filepath.Join(t.TempDir(), "nonexistent.yaml"))
 	require.Error(t, err)
 }
+
+// TestValidateProjectionHeader_RejectsIdentityHeaders verifies a projection
+// header can't name an identity header beyond injects, in any casing or
+// spelled with underscores: it is set after them and would overwrite the
+// verified value.
+func TestValidateProjectionHeader_RejectsIdentityHeaders(t *testing.T) {
+	t.Parallel()
+	for _, header := range []string{
+		"X-Beyond-User", "X-Beyond-Email", "X-Beyond-Name", "X-Beyond-Groups", "X-Beyond-Did",
+		"x-beyond-did", "X-BEYOND-EMAIL", "X_Beyond_Groups", "x_beyond-did", "X-Beyond_Name",
+	} {
+		t.Run(header, func(t *testing.T) {
+			t.Parallel()
+			path := writeTempFile(t, `
+applications:
+  grafana:
+    upstream: http://localhost:3000
+    host: grafana.example.com
+    allowed_groups:
+      - engineering
+    grafana_role_projection:
+      header: `+header+`
+      default_role: Viewer
+      rules:
+        - groups: [engineering]
+          role: Editor
+`)
+			_, err := LoadConfig(path)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "grafana_role_projection.header")
+			assert.Contains(t, err.Error(), "identity header")
+		})
+	}
+	require.NoError(t, validateProjectionHeader("X-Beyond-Role"), "a non-identity X-Beyond-* header stays valid")
+}

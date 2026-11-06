@@ -243,6 +243,7 @@ func newServeCmd(configPath *string) *cli.Command {
 					ClientID:      oidcClientID,
 					ClientSecret:  oidcClientSecret,
 					TLSSkipVerify: oidcTLSSkipVerify,
+					Logger:        logger,
 				})
 				if oidcTLSSkipVerify {
 					logger.Warn("OIDC TLS certificate verification is disabled")
@@ -270,6 +271,7 @@ func newServeCmd(configPath *string) *cli.Command {
 					IssuerURL:     app.MintAuth.Issuer,
 					ClientID:      app.MintAuth.ClientID,
 					TLSSkipVerify: oidcTLSSkipVerify,
+					Logger:        logger,
 				})
 				if err != nil {
 					return fmt.Errorf("creating mint OIDC auth for app %q: %w", app.Name, err)

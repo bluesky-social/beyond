@@ -117,7 +117,9 @@ sets authoritative `X-Forwarded-Host` and `X-Forwarded-Proto` headers as usual.
 ## Identity headers for upstream services
 
 Beyond removes every client-supplied `X-Beyond-*` header before proxying a
-request. For an authenticated request, it adds the verified identity to the
+request, in any letter case and also when spelled with `_` for `-` (such as
+`X_Beyond_Email`), because CGI-style servers treat both spellings as the same
+header. For an authenticated request, it adds the verified identity to the
 outbound request:
 
 | Header | Value | How to use it |
@@ -126,6 +128,7 @@ outbound request:
 | `X-Beyond-Email` | The user's verified email address | Use as the stable user identifier for new integrations. |
 | `X-Beyond-Name` | The user's display name | Use only for display; the header is omitted when no name is available. |
 | `X-Beyond-Groups` | Verified group names joined with `\|` | Split on `\|` and compare complete group names; the header is omitted when the user has no groups. |
+| `X-Beyond-Did` | The user's atproto DID (`did:plc:...` or `did:web:...`) | Optional; present only for users mapped to an atproto account. Use to attribute actions to that account; see below. |
 | Configured `grafana_role_projection.header` (commonly `X-Beyond-Role`) | `Admin`, `Editor`, `Viewer`, or `None` | Optional, app-specific Grafana role; present only when role projection is configured. |
 
 Treat the headers as trusted only when the upstream cannot be reached except
@@ -136,6 +139,19 @@ intentionally injects no identity on configured unauthenticated or
 authentication-passthrough paths. Use `X-Beyond-Email`, not the display name,
 for identity, and perform exact group comparisons rather than substring
 matches.
+
+Beyond takes `X-Beyond-Did` from the identity provider's optional
+`atproto_did` OIDC claim at login. It forwards the value only when it is
+`did:plc:` followed by 24 characters from `[a-z2-7]`, or `did:web:` followed
+by a lowercase hostname. Any other value is logged and dropped; it never fails
+the login. The DID is fixed for the life of the session, whereas groups are
+re-resolved, so a mapping change takes effect at the user's next login. Only
+the browser login carries the claim, so the header is sent only on
+browser-session requests: never on `bearer_auth` or `credential_auth` requests,
+or on passthrough paths. As with the other identity headers, an upstream may rely on
+`X-Beyond-Did` only when Beyond is the sole path to it, because a caller that
+can reach the upstream directly can claim any DID. Treat a missing header as
+"no atproto identity", never as a reason to fall back to another identifier.
 
 ## Running with docker
 

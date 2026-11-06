@@ -389,7 +389,7 @@ func TestHandler_IdentityPropagation_OIDCToUpstreamHeaders(t *testing.T) {
 
 	// Upstream records whatever identity headers it received.
 	type observed struct {
-		user, email, name, groups, role string
+		user, email, name, groups, role, did string
 	}
 	var got observed
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -399,6 +399,7 @@ func TestHandler_IdentityPropagation_OIDCToUpstreamHeaders(t *testing.T) {
 			name:   r.Header.Get("X-Beyond-Name"),
 			groups: r.Header.Get("X-Beyond-Groups"),
 			role:   r.Header.Get("X-Beyond-Role"),
+			did:    r.Header.Get("X-Beyond-Did"),
 		}
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -408,9 +409,10 @@ func TestHandler_IdentityPropagation_OIDCToUpstreamHeaders(t *testing.T) {
 	// map (held by reference) so we can inject the nonce beyond generated into
 	// the id_token before the callback fetches it.
 	claims := map[string]any{
-		"email":  "alice@example.com",
-		"name":   "Alice Example",
-		"groups": []string{"engineering", "team-all"},
+		"email":       "alice@example.com",
+		"name":        "Alice Example",
+		"groups":      []string{"engineering", "team-all"},
+		"atproto_did": testDIDPLC,
 	}
 	oidcSrv, _ := mockOIDCProviderWithClaims(t, claims)
 	auth, err := NewOIDCAuth(context.Background(), OIDCConfig{
@@ -487,6 +489,8 @@ func TestHandler_IdentityPropagation_OIDCToUpstreamHeaders(t *testing.T) {
 		"X-Beyond-Groups must carry the joined groups claim")
 	assert.Equal(t, "Editor", got.role,
 		"X-Beyond-Role must carry the app-specific Grafana role projected from groups")
+	assert.Equal(t, testDIDPLC, got.did,
+		"X-Beyond-Did must carry the atproto_did claim through the session cookie")
 }
 
 func TestHandler_OIDCRedirect_DifferentHosts(t *testing.T) {

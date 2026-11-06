@@ -501,7 +501,9 @@ func (h *Handler) resolveBrowserIdentity(w http.ResponseWriter, sess *SessionDat
 			groups = sanitizeGroups(fresh)
 		}
 	}
-	return &Identity{Email: sess.Email, Name: sess.Name, Groups: groups}, true
+	// Unlike groups, the DID is not re-resolved: it is fixed at login, so a
+	// changed IdP mapping takes effect at the user's next login.
+	return &Identity{Email: sess.Email, Name: sess.Name, Groups: groups, DID: sess.DID}, true
 }
 
 // proxyDecision returns the access-log decision for a completed proxy request:
@@ -578,6 +580,7 @@ func (h *Handler) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 		Email:     identity.Email,
 		Name:      identity.Name,
 		Groups:    identity.Groups,
+		DID:       identity.DID,
 		ExpiresAt: time.Now().Add(h.getHTTPLifetime()),
 	}
 	if err := h.sessions.Save(w, sessData); err != nil {

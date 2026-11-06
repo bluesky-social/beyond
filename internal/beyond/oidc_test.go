@@ -1,10 +1,12 @@
 package beyond
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -388,11 +390,19 @@ func TestOIDCAuth_Callback_MissingCode(t *testing.T) {
 // error rather than silently producing a malformed identity.
 func runCallbackWithClaims(t *testing.T, userClaims map[string]any) (*Identity, error) {
 	t.Helper()
+	return runCallbackWithClaimsAndLogger(t, userClaims, nil)
+}
+
+// runCallbackWithClaimsAndLogger is runCallbackWithClaims with the OIDCAuth
+// logging to logger, so tests can assert on non-fatal claim warnings.
+func runCallbackWithClaimsAndLogger(t *testing.T, userClaims map[string]any, logger *slog.Logger) (*Identity, error) {
+	t.Helper()
 
 	auth, err := NewOIDCAuth(context.Background(), OIDCConfig{
 		IssuerURL:    mustMockIssuer(t, userClaims),
 		ClientID:     "test-client",
 		ClientSecret: "test-secret",
+		Logger:       logger,
 	})
 	require.NoError(t, err)
 
@@ -512,4 +522,56 @@ func TestOIDCAuth_Callback_TruncatesLongName(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.LessOrEqual(t, len(id.Name), maxNameLen)
+}
+
+// TestOIDCAuth_Callback_ATProtoDID covers the optional atproto_did claim: a
+// valid DID lands on the identity, and an absent, empty, or malformed claim
+// leaves it empty without failing the login. Only a malformed claim warns.
+func TestOIDCAuth_Callback_ATProtoDID(t *testing.T) {
+	t.Parallel()
+	const absent = "<absent>"
+	tests := []struct {
+		name     string
+		claim    any
+		wantDID  string
+		wantWarn bool
+	}{
+		{"valid plc", testDIDPLC, testDIDPLC, false},
+		{"valid web", testDIDWeb, testDIDWeb, false},
+		{"absent", absent, "", false},
+		{"null", nil, "", false},
+		{"empty string", "", "", false},
+		{"invalid string", "did:plc:not-a-real-did", "", true},
+		{"uppercase web host", "did:web:Support.Example.com", "", true},
+		{"number", 12345, "", true},
+		{"object", map[string]any{"did": testDIDPLC}, "", true},
+		{"array", []string{testDIDPLC}, "", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			claims := map[string]any{
+				"email":  "alice@example.com",
+				"name":   "Alice Example",
+				"groups": []string{"engineering"},
+			}
+			if s, ok := tt.claim.(string); !ok || s != absent {
+				claims["atproto_did"] = tt.claim
+			}
+			var logs bytes.Buffer
+			logger := slog.New(slog.NewJSONHandler(&logs, nil))
+
+			id, err := runCallbackWithClaimsAndLogger(t, claims, logger)
+			require.NoError(t, err, "atproto_did must never fail the login")
+			require.NotNil(t, id)
+			assert.Equal(t, "alice@example.com", id.Email)
+			assert.Equal(t, []string{"engineering"}, id.Groups)
+			assert.Equal(t, tt.wantDID, id.DID)
+			if tt.wantWarn {
+				assert.Contains(t, logs.String(), "dropping invalid atproto_did claim")
+			} else {
+				assert.Empty(t, logs.String())
+			}
+		})
+	}
 }

@@ -94,10 +94,12 @@ func (h *Handler) handleUntrustedPassthrough(w http.ResponseWriter, r *http.Requ
 
 	// Strip any spoofed X-Beyond-* headers the client may have supplied.
 	// The upstream has no session context, so there is nothing to inject —
-	// but we must not let a client forge identity claims through.
+	// but we must not let a client forge identity claims through. Delete by
+	// the map key itself: Header.Del re-canonicalizes its argument and would
+	// leave a key stored in any other casing in place.
 	for key := range r.Header {
-		if strings.HasPrefix(strings.ToLower(key), beyondHeaderPrefix) {
-			r.Header.Del(key)
+		if isBeyondHeader(key) {
+			delete(r.Header, key)
 		}
 	}
 

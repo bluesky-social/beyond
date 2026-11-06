@@ -1,10 +1,14 @@
 package beyond
 
 import (
+	"bytes"
+	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -413,4 +417,395 @@ func TestInjectBeyondHeaders_EmptyIdentityLeavesRequestEmpty(t *testing.T) {
 		assert.False(t, strings.HasPrefix(strings.ToLower(key), beyondHeaderPrefix),
 			"no X-Beyond-* header should be set for an empty identity (got %q)", key)
 	}
+}
+
+// ---------------------------------------------------------------------------
+// atproto DID (X-Beyond-Did)
+// ---------------------------------------------------------------------------
+
+const (
+	testDIDPLC = "did:plc:abcdefghijklmnopqrstuvwx"
+	testDIDWeb = "did:web:support.example.com"
+	// spoofedDID is what a client tries to smuggle; it is syntactically valid
+	// so a test failure can't be explained away by validation.
+	spoofedDID = "did:plc:zzzzzzzzzzzzzzzzzzzzzzzz"
+)
+
+func TestIsValidATProtoDID(t *testing.T) {
+	t.Parallel()
+	label63 := strings.Repeat("a", 63)
+	// 63+1+63+1+63+1+61 = 253 bytes, the hostname maximum.
+	host253 := label63 + "." + strings.Repeat("b", 63) + "." + strings.Repeat("c", 63) + "." + strings.Repeat("d", 61)
+	require.Len(t, host253, 253)
+
+	valid := []string{
+		testDIDPLC,
+		"did:plc:234567234567234567234567",
+		"did:web:example.com",
+		testDIDWeb,
+		"did:web:a-b.example.com",
+		"did:web:localhost",
+		"did:web:" + label63 + ".com",
+		"did:web:" + host253,
+	}
+	for _, did := range valid {
+		assert.True(t, isValidATProtoDID(did), "want valid: %q", did)
+	}
+
+	invalid := []string{
+		"",
+		"did:plc:",
+		"did:plc:abcdefghijklmnopqrstuvw",   // 23 chars
+		"did:plc:abcdefghijklmnopqrstuvwxy", // 25 chars
+		"did:plc:ABCDEFGHIJKLMNOPQRSTUVWX",  // uppercase
+		"did:plc:abcdefghijklmnopqrstuvw0",  // 0 is not base32
+		"did:plc:abcdefghijklmnopqrstuvw1",  // 1 is not base32
+		"did:plc:abcdefghijklmnopqrstuvw8",  // 8 is not base32
+		"did:plc:abcdefghijklmnopqrstuvw9",  // 9 is not base32
+		"DID:plc:abcdefghijklmnopqrstuvwx",
+		"did:PLC:abcdefghijklmnopqrstuvwx",
+		" " + testDIDPLC,
+		testDIDPLC + " ",
+		testDIDPLC + "\n",
+		testDIDPLC + "\r\nX-Evil: 1",
+		"did:web:",
+		"did:web:Example.com",
+		"did:web:example.com.",
+		"did:web:.example.com",
+		"did:web:example..com",
+		"did:web:-example.com",
+		"did:web:example-.com",
+		"did:web:example.com%3A8080",
+		"did:web:example.com:user:alice",
+		"did:web:exa_mple.com",
+		"did:web:" + label63 + "a.com",    // 64-byte label
+		"did:web:" + host253[:252] + "dd", // 254-byte hostname
+		"did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK", // gitleaks:allow (W3C did:key spec example, not a secret)
+		"alice@example.com",
+	}
+	for _, did := range invalid {
+		assert.False(t, isValidATProtoDID(did), "want invalid: %q", did)
+	}
+}
+
+func TestParseATProtoDIDClaim(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		raw     json.RawMessage
+		want    string
+		wantErr bool
+	}{
+		{"absent", nil, "", false},
+		{"null", json.RawMessage(`null`), "", false},
+		{"empty string", json.RawMessage(`""`), "", false},
+		{"valid plc", json.RawMessage(`"` + testDIDPLC + `"`), testDIDPLC, false},
+		{"valid web", json.RawMessage(`"` + testDIDWeb + `"`), testDIDWeb, false},
+		{"invalid syntax", json.RawMessage(`"did:plc:tooshort"`), "", true},
+		{"handle not DID", json.RawMessage(`"alice.bsky.social"`), "", true},
+		{"number", json.RawMessage(`42`), "", true},
+		{"bool", json.RawMessage(`true`), "", true},
+		{"object", json.RawMessage(`{"did":"` + testDIDPLC + `"}`), "", true},
+		{"array", json.RawMessage(`["` + testDIDPLC + `"]`), "", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := parseATProtoDIDClaim(tt.raw)
+			assert.Equal(t, tt.want, got)
+			if tt.wantErr {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
+}
+
+func TestAtprotoDIDFromClaim_LogsOnlyDroppedValues(t *testing.T) {
+	t.Parallel()
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, nil))
+
+	assert.Equal(t, testDIDPLC, atprotoDIDFromClaim(logger, json.RawMessage(`"`+testDIDPLC+`"`), "alice@example.com"))
+	assert.Equal(t, "", atprotoDIDFromClaim(logger, nil, "alice@example.com"))
+	assert.Empty(t, buf.String(), "valid and absent claims must not log")
+
+	assert.Equal(t, "", atprotoDIDFromClaim(logger, json.RawMessage(`"did:plc:BAD"`), "alice@example.com"))
+	assert.Contains(t, buf.String(), `"level":"WARN"`)
+	assert.Contains(t, buf.String(), "atproto_did")
+	assert.Contains(t, buf.String(), "alice@example.com")
+}
+
+func TestInjectBeyondHeaders_DID(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		did  string
+		want string
+	}{
+		{"valid plc is forwarded", testDIDPLC, testDIDPLC},
+		{"valid web is forwarded", testDIDWeb, testDIDWeb},
+		{"no DID omits the header", "", ""},
+		// Identity is only built with validated DIDs today; the injection
+		// point re-checks so a future construction path can't forward junk.
+		{"invalid DID omits the header", "did:plc:BAD", ""},
+		{"header-injection DID omits the header", testDIDPLC + "\r\nX-Evil: 1", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			r := httptest.NewRequest(http.MethodGet, "/", nil)
+			r.Header.Set("X-Beyond-Did", spoofedDID)
+			r.Header["x-beyond-did"] = []string{spoofedDID} // non-canonical key
+
+			injectBeyondHeaders(r, &Identity{Email: "alice@example.com", DID: tt.did})
+
+			got := beyondDIDValues(r.Header)
+			if tt.want == "" {
+				assert.Empty(t, got, "X-Beyond-Did must be absent")
+			} else {
+				assert.Equal(t, []string{tt.want}, got, "X-Beyond-Did must carry only the verified DID")
+			}
+		})
+	}
+}
+
+// beyondHeaderValues returns every value in h for the header name, ignoring
+// case and reading '_' as '-', so neither a non-canonical key nor an
+// underscore spelling (which CGI-style upstreams read as the same header) can
+// hide from an assertion. It deliberately doesn't call normalizeHeaderName, so
+// a regression there can't also blind the assertion.
+func beyondHeaderValues(h http.Header, name string) []string {
+	norm := func(s string) string { return strings.ReplaceAll(strings.ToLower(s), "_", "-") }
+	var vals []string
+	for k, v := range h {
+		if norm(k) == norm(name) {
+			vals = append(vals, v...)
+		}
+	}
+	return vals
+}
+
+func beyondDIDValues(h http.Header) []string {
+	return beyondHeaderValues(h, headerBeyondDID)
+}
+
+// addSpoofedDID sets client-supplied X-Beyond-Did values in every spelling a
+// client can use: any casing (canonicalized by Header.Set), underscores for
+// hyphens, and a key outside canonical form. Go's server canonicalizes names
+// read off the wire, so the last is reachable only in-process; it pins that
+// the strip deletes by map key.
+func addSpoofedDID(r *http.Request) {
+	r.Header.Set("x-beyond-did", spoofedDID)
+	r.Header.Add("X-BEYOND-DID", "did:web:attacker.example")
+	r.Header.Set("X_Beyond_Did", spoofedDID)
+	r.Header.Set("x_beyond-did", spoofedDID)
+	r.Header["x-beyond-did"] = []string{spoofedDID}
+}
+
+// sessionCookieWithDID returns a session cookie for alice in engineering
+// carrying did, issued by any SessionManager sharing testSessionManager's key.
+func sessionCookieWithDID(t *testing.T, did string) *http.Cookie {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	require.NoError(t, testSessionManager(t).Save(rec, &SessionData{
+		Email:     "alice@example.com",
+		Groups:    []string{"engineering", "platform"},
+		DID:       did,
+		ExpiresAt: time.Now().Add(time.Hour),
+	}))
+	cookie := cookieFromRecorder(t, rec, sessionCookieName)
+	require.NotNil(t, cookie)
+	return cookie
+}
+
+// TestXBeyondDid_ClientSpoofNeverReachesUpstream proves a client-supplied
+// X-Beyond-Did is stripped on every request path, and that only a DID from a
+// verified login is forwarded. Passthrough paths also carry a DID-bearing
+// session to show they never inject identity.
+func TestXBeyondDid_ClientSpoofNeverReachesUpstream(t *testing.T) {
+	t.Parallel()
+
+	t.Run("session without DID", func(t *testing.T) {
+		t.Parallel()
+		backend := newRecordingBackend(t)
+		h, _ := newTestHandler(t, backend.srv)
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req.Host = "grafana.internal"
+		req.AddCookie(sessionCookieWithDID(t, ""))
+		addSpoofedDID(req)
+		rec := httptest.NewRecorder()
+
+		h.ServeHTTP(rec, req)
+
+		require.Equal(t, http.StatusOK, rec.Code)
+		assert.Equal(t, "alice@example.com", backend.last.Get(headerBeyondEmail))
+		assert.Empty(t, beyondDIDValues(backend.last))
+	})
+
+	t.Run("session with DID", func(t *testing.T) {
+		t.Parallel()
+		backend := newRecordingBackend(t)
+		h, _ := newTestHandler(t, backend.srv)
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req.Host = "grafana.internal"
+		req.AddCookie(sessionCookieWithDID(t, testDIDPLC))
+		addSpoofedDID(req)
+		// Naming the header as hop-by-hop must not erase the injected DID.
+		req.Header.Set("Connection", "X-Beyond-Did")
+		rec := httptest.NewRecorder()
+
+		h.ServeHTTP(rec, req)
+
+		require.Equal(t, http.StatusOK, rec.Code)
+		assert.Equal(t, []string{testDIDPLC}, beyondDIDValues(backend.last))
+	})
+
+	t.Run("bearer", func(t *testing.T) {
+		t.Parallel()
+		h, idp, backend := newBearerTestHandler(t)
+		tok := idp.mint(t, bearerTestIssuer, bearerTestAudience, time.Now().Add(time.Hour), []string{"platform"})
+		req := bearerReq("skipper.example.com", tok)
+		addSpoofedDID(req)
+		rec := httptest.NewRecorder()
+
+		h.ServeHTTP(rec, req)
+
+		require.Equal(t, http.StatusOK, rec.Code)
+		assert.Equal(t, "alice@example.com", backend.last.Get(headerBeyondEmail))
+		assert.Empty(t, beyondDIDValues(backend.last))
+	})
+
+	t.Run("credential", func(t *testing.T) {
+		t.Parallel()
+		fa := newFakeAuthentik(t, happyTokenEndpoint(t, "alice@example.com", "app-pass-123", defaultClaims()))
+		h, backend := newCredentialTestHandler(t, fa, []string{"platform"})
+		req := credReqBearer("aigw.example.com", "alice@example.com:app-pass-123")
+		addSpoofedDID(req)
+		rec := httptest.NewRecorder()
+
+		h.ServeHTTP(rec, req)
+
+		require.Equal(t, http.StatusOK, rec.Code)
+		assert.Equal(t, "alice@example.com", backend.last.Get(headerBeyondEmail))
+		assert.Empty(t, beyondDIDValues(backend.last))
+	})
+
+	t.Run("authorization scheme passthrough", func(t *testing.T) {
+		t.Parallel()
+		h, backend := newPassthroughTestHandler(t)
+		req := passthroughReq("netbox.example.com", "Token abc123")
+		addSpoofedDID(req)
+		rec := httptest.NewRecorder()
+
+		h.ServeHTTP(rec, req)
+
+		require.Equal(t, http.StatusOK, rec.Code)
+		assert.Empty(t, beyondDIDValues(backend.last))
+	})
+
+	t.Run("unauthenticated passthrough", func(t *testing.T) {
+		t.Parallel()
+		h, _, backend := newUnauthenticatedPassthroughTestHandler(t)
+		req := httptest.NewRequest(http.MethodGet, "/mcp", nil)
+		req.Host = "mcp.example.com"
+		req.AddCookie(sessionCookieWithDID(t, testDIDPLC))
+		addSpoofedDID(req)
+		rec := httptest.NewRecorder()
+
+		h.ServeHTTP(rec, req)
+
+		require.Equal(t, http.StatusOK, rec.Code)
+		assert.Empty(t, beyondDIDValues(backend.last))
+	})
+
+	t.Run("upstream auth passthrough", func(t *testing.T) {
+		t.Parallel()
+		h, _, backend := newUpstreamAuthPassthroughTestHandler(t)
+		req := httptest.NewRequest(http.MethodPost, "/mcp", nil)
+		req.Host = "opaque-mcp.example.com"
+		req.Header.Set("Authorization", "Bearer opaque-token")
+		req.AddCookie(sessionCookieWithDID(t, testDIDPLC))
+		addSpoofedDID(req)
+		rec := httptest.NewRecorder()
+
+		h.ServeHTTP(rec, req)
+
+		require.Equal(t, http.StatusOK, rec.Code)
+		assert.Empty(t, beyondDIDValues(backend.last))
+	})
+
+	t.Run("CORS preflight passthrough", func(t *testing.T) {
+		t.Parallel()
+		h, backend := newCORSPreflightTestHandler(t)
+		req := httptest.NewRequest(http.MethodOptions, "/user", nil)
+		req.Host = "api.example.com"
+		req.Header.Set("Origin", "https://app.example.com")
+		req.Header.Set("Access-Control-Request-Method", http.MethodGet)
+		req.AddCookie(sessionCookieWithDID(t, testDIDPLC))
+		addSpoofedDID(req)
+		rec := httptest.NewRecorder()
+
+		h.ServeHTTP(rec, req)
+
+		require.Equal(t, http.StatusOK, rec.Code)
+		assert.Empty(t, beyondDIDValues(backend.last))
+	})
+}
+
+func TestIsBeyondHeader(t *testing.T) {
+	t.Parallel()
+	for _, name := range []string{
+		"X-Beyond-Did", "x-beyond-did", "X-BEYOND-EMAIL", "X_Beyond_Did",
+		"x_beyond-email", "X-Beyond_Groups", "X_beyond_user", "X-Beyond-Role",
+	} {
+		assert.True(t, isBeyondHeader(name), "want in namespace: %q", name)
+	}
+	for _, name := range []string{
+		"", "X-Beyond", "X-Beyondx-Did", "XBeyond-Did", "X--Beyond-Did",
+		"X-Forwarded-For", "Beyond-Did", "X.Beyond.Did",
+	} {
+		assert.False(t, isBeyondHeader(name), "want outside namespace: %q", name)
+	}
+}
+
+func TestIsIdentityHeaderName(t *testing.T) {
+	t.Parallel()
+	for _, name := range []string{
+		"X-Beyond-User", "X-Beyond-Email", "X-Beyond-Name", "X-Beyond-Groups", "X-Beyond-Did",
+		"x-beyond-did", "X-BEYOND-GROUPS", "X_Beyond_Email", "x_beyond-did", "X-Beyond_Name",
+	} {
+		assert.True(t, isIdentityHeaderName(name), "want reserved: %q", name)
+	}
+	for _, name := range []string{"X-Beyond-Role", "X-Beyond-Did-Role", "X-Beyond-Emails", "X-Email", ""} {
+		assert.False(t, isIdentityHeaderName(name), "want not reserved: %q", name)
+	}
+}
+
+// TestBeyondHeaders_UnderscoreSpoofsStrippedOnSessionPath covers the identity
+// headers other than X-Beyond-Did: underscore spellings and non-canonical keys
+// must not reach the upstream alongside, or instead of, the verified values.
+func TestBeyondHeaders_UnderscoreSpoofsStrippedOnSessionPath(t *testing.T) {
+	t.Parallel()
+	backend := newRecordingBackend(t)
+	h, _ := newTestHandler(t, backend.srv)
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Host = "grafana.internal"
+	req.AddCookie(sessionCookieWithDID(t, ""))
+	req.Header.Set("X_Beyond_Email", "attacker@evil.com")
+	req.Header.Set("X_Beyond_Groups", "authentik Admins")
+	req.Header.Set("x_beyond-user", "attacker@evil.com")
+	req.Header.Set("X_BEYOND_NAME", "Attacker Evil")
+	req.Header["x-beyond-groups"] = []string{"authentik Admins"}
+	rec := httptest.NewRecorder()
+
+	h.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, []string{"alice@example.com"}, beyondHeaderValues(backend.last, headerBeyondEmail))
+	assert.Equal(t, []string{"alice@example.com"}, beyondHeaderValues(backend.last, headerBeyondUser))
+	assert.Equal(t, []string{"engineering|platform"}, beyondHeaderValues(backend.last, headerBeyondGroups))
+	// The session carries no name, so no value at all may arrive.
+	assert.Empty(t, beyondHeaderValues(backend.last, headerBeyondName))
 }

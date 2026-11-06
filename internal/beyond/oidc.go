@@ -8,7 +8,9 @@ import (
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 
 	"github.com/coreos/go-oidc/v3/oidc"
@@ -26,6 +28,10 @@ type OIDCConfig struct {
 	// beyond runs in-cluster and reaches the identity provider via a ClusterIP
 	// with a self-signed certificate. Browser-facing redirects are unaffected.
 	TLSSkipVerify bool
+
+	// Logger receives non-fatal claim warnings, such as a dropped
+	// atproto_did. Nil means slog.Default().
+	Logger *slog.Logger
 }
 
 // OIDCAuth handles the OIDC/OAuth 2 authorisation code flow with PKCE.
@@ -35,6 +41,14 @@ type OIDCAuth struct {
 	config     oauth2.Config
 	verifier   *oidc.IDTokenVerifier
 	httpClient *http.Client // non-nil when TLSSkipVerify is enabled
+	logger     *slog.Logger
+}
+
+func loggerOrDefault(logger *slog.Logger) *slog.Logger {
+	if logger == nil {
+		return slog.Default()
+	}
+	return logger
 }
 
 // NewOIDCAuth performs OIDC provider discovery and returns a ready-to-use
@@ -72,6 +86,7 @@ func NewOIDCAuth(ctx context.Context, cfg OIDCConfig) (*OIDCAuth, error) {
 		config:     oauthCfg,
 		verifier:   verifier,
 		httpClient: httpClient,
+		logger:     loggerOrDefault(cfg.Logger),
 	}, nil
 }
 
@@ -94,8 +109,8 @@ var mintScopes = []string{oidc.ScopeOpenID, "profile", "email", "groups", "goaut
 // NewMintOIDCAuth builds an OIDCAuth for the app-password mint flow. It is a
 // SEPARATE instance from the login OIDCAuth (never reuse the login client for
 // this): it uses the mint client_id and the mintScopes, so its access token
-// carries the API scope. The login path's OIDCAuth is untouched — its scopes
-// and its token-discarding HandleCallback stay byte-for-byte unchanged.
+// carries the API scope. The login path's OIDCAuth is untouched: it keeps its
+// own scopes, and its HandleCallback still discards the access token.
 //
 // The mint client is public (PKCE, no secret), so ClientSecret is left empty.
 func NewMintOIDCAuth(ctx context.Context, cfg OIDCConfig) (*OIDCAuth, error) {
@@ -128,6 +143,7 @@ func NewMintOIDCAuth(ctx context.Context, cfg OIDCConfig) (*OIDCAuth, error) {
 		config:     oauthCfg,
 		verifier:   verifier,
 		httpClient: httpClient,
+		logger:     loggerOrDefault(cfg.Logger),
 	}, nil
 }
 
@@ -351,19 +367,27 @@ func (o *OIDCAuth) HandleCallback(
 	// this function focused on the OIDC plumbing makes the security
 	// policy auditable in one place.
 	var claims struct {
-		Email             string   `json:"email"`
-		Name              string   `json:"name"`
-		PreferredUsername string   `json:"preferred_username"`
-		Groups            []string `json:"groups"`
+		Email             string          `json:"email"`
+		Name              string          `json:"name"`
+		PreferredUsername string          `json:"preferred_username"`
+		Groups            []string        `json:"groups"`
+		ATProtoDID        json.RawMessage `json:"atproto_did"`
 	}
 	if err := idToken.Claims(&claims); err != nil {
 		return nil, fmt.Errorf("extracting id_token claims: %w", err)
 	}
 
-	return validateAndNormalizeIdentity(
+	identity, err := validateAndNormalizeIdentity(
 		claims.Email,
 		claims.Name,
 		claims.PreferredUsername,
 		claims.Groups,
 	)
+	if err != nil {
+		return nil, err
+	}
+	// The optional atproto_did claim is applied last and can only be
+	// dropped, never fail the login.
+	identity.DID = atprotoDIDFromClaim(o.logger, claims.ATProtoDID, identity.Email)
+	return identity, nil
 }
