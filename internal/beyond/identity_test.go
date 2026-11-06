@@ -480,7 +480,7 @@ func TestIsValidATProtoDID(t *testing.T) {
 		"did:web:exa_mple.com",
 		"did:web:" + label63 + "a.com",    // 64-byte label
 		"did:web:" + host253[:252] + "dd", // 254-byte hostname
-		"did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+		"did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK", // gitleaks:allow (W3C did:key spec example, not a secret)
 		"alice@example.com",
 	}
 	for _, did := range invalid {
