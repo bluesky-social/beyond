@@ -1,8 +1,11 @@
 package beyond
 
 import (
+	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
+	"regexp"
 	"strings"
 	"unicode/utf8"
 )
@@ -27,10 +30,14 @@ import (
 //     maxGroupLen bytes (truncated at a rune boundary), contains no ASCII
 //     control characters, and does not contain the '|' character that
 //     beyond uses as the X-Beyond-Groups delimiter.
+//   - DID is empty or satisfies isValidATProtoDID. It comes only from the
+//     IdP's optional atproto_did claim (see atprotoDIDFromClaim); a missing
+//     or malformed claim leaves it empty and never fails authentication.
 type Identity struct {
 	Email  string
 	Name   string
 	Groups []string
+	DID    string
 }
 
 // Identity validation limits.
@@ -73,6 +80,7 @@ const (
 	headerBeyondEmail  = "X-Beyond-Email"
 	headerBeyondName   = "X-Beyond-Name"
 	headerBeyondGroups = "X-Beyond-Groups"
+	headerBeyondDID    = "X-Beyond-Did"
 
 	// beyondHeaderPrefix is the (case-insensitive) prefix used to detect
 	// and strip any inbound identity headers before we inject our own.
@@ -184,6 +192,70 @@ func sanitizeGroups(groups []string) []string {
 		clean = append(clean, truncateAtRune(g, maxGroupLen))
 	}
 	return clean
+}
+
+// atprotoDIDClaim is the optional OIDC claim carrying a user's atproto DID.
+// The IdP emits it only for users mapped to an atproto account.
+const atprotoDIDClaim = "atproto_did"
+
+// The DID syntax beyond accepts is a contract shared with the IdP mapping and
+// with the upstreams that read X-Beyond-Did, and is deliberately narrower than
+// the DID spec: did:plc: followed by exactly 24 base32 characters, or did:web:
+// followed by a lowercase hostname (dot-separated labels of [a-z0-9-], 1-63
+// bytes each, not starting or ending with '-'; no port, path, or trailing
+// dot). Anything else is treated as no DID.
+var (
+	didPLCRe = regexp.MustCompile(`^did:plc:[a-z2-7]{24}$`)
+	didWebRe = regexp.MustCompile(`^did:web:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$`)
+)
+
+// maxDIDWebLen bounds a did:web DID to the prefix plus a 253-byte hostname
+// (RFC 1035), which the label regexp alone cannot express.
+const maxDIDWebLen = len("did:web:") + 253
+
+// isValidATProtoDID reports whether s is a DID beyond will forward as
+// X-Beyond-Did. The allowed alphabet excludes control characters, so a valid
+// DID is always a safe header value.
+func isValidATProtoDID(s string) bool {
+	if didPLCRe.MatchString(s) {
+		return true
+	}
+	return len(s) <= maxDIDWebLen && didWebRe.MatchString(s)
+}
+
+// parseATProtoDIDClaim returns the DID carried by a raw atproto_did claim. An
+// absent, null, or empty-string claim means no DID and is not an error. Any
+// other value that is not a string holding a valid DID returns "" and an error
+// describing it, for the caller to log.
+//
+// The claim is taken as raw JSON so that a non-string value cannot fail the
+// whole claims decode, and with it the login.
+func parseATProtoDIDClaim(raw json.RawMessage) (string, error) {
+	if len(raw) == 0 {
+		return "", nil
+	}
+	var did string
+	if err := json.Unmarshal(raw, &did); err != nil {
+		return "", fmt.Errorf("%s claim is not a string", atprotoDIDClaim)
+	}
+	if did == "" {
+		return "", nil
+	}
+	if !isValidATProtoDID(did) {
+		return "", fmt.Errorf("%s claim %q is not a did:plc or did:web DID", atprotoDIDClaim, truncateLogError(did))
+	}
+	return did, nil
+}
+
+// atprotoDIDFromClaim parses the optional atproto_did claim for the user
+// identified by email. A malformed claim is logged and dropped: it withholds
+// X-Beyond-Did but never fails authentication.
+func atprotoDIDFromClaim(logger *slog.Logger, raw json.RawMessage, email string) string {
+	did, err := parseATProtoDIDClaim(raw)
+	if err != nil {
+		logger.Warn("dropping invalid atproto_did claim", "user", email, "error", err)
+	}
+	return did
 }
 
 // resolveDisplayName picks a human-readable display name from the available
@@ -335,6 +407,11 @@ func injectBeyondHeaders(r *http.Request, identity *Identity) {
 	setHeaderIfNonEmpty(r.Header, headerBeyondEmail, identity.Email)
 	setHeaderIfNonEmpty(r.Header, headerBeyondName, identity.Name)
 	setHeaderIfNonEmpty(r.Header, headerBeyondGroups, strings.Join(identity.Groups, groupDelimiter))
+	// Re-checked here, where identity reaches the wire, so no construction
+	// path can forward a DID outside the shared syntax contract.
+	if isValidATProtoDID(identity.DID) {
+		r.Header.Set(headerBeyondDID, identity.DID)
+	}
 }
 
 // setHeaderIfNonEmpty sets h[key] = value only if value is non-empty. See

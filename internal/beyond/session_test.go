@@ -120,6 +120,86 @@ func TestSessionManager_LegacySessionWithoutName_Decodes(t *testing.T) {
 	assert.Equal(t, "", loaded.Name, "missing `name` key must leave Name empty")
 }
 
+// TestSessionManager_DIDRoundTrip verifies the atproto DID survives the
+// session cookie, and that a session without one adds no `did` key, so
+// cookies for users with no DID keep their existing shape and size.
+func TestSessionManager_DIDRoundTrip(t *testing.T) {
+	t.Parallel()
+	sm := testSessionManager(t)
+
+	for _, did := range []string{testDIDPLC, ""} {
+		w := httptest.NewRecorder()
+		require.NoError(t, sm.Save(w, &SessionData{
+			Email:     "alice@example.com",
+			Groups:    []string{"engineering"},
+			DID:       did,
+			ExpiresAt: time.Now().Add(time.Hour),
+		}))
+		cookie := cookieFromRecorder(t, w, sessionCookieName)
+		require.NotNil(t, cookie)
+
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req.AddCookie(cookie)
+		loaded, err := sm.Load(req)
+		require.NoError(t, err)
+		require.NotNil(t, loaded)
+		assert.Equal(t, did, loaded.DID)
+
+		raw, err := base64.RawURLEncoding.DecodeString(cookie.Value)
+		require.NoError(t, err)
+		var fields map[string]any
+		require.NoError(t, json.Unmarshal(sm.tryDecrypt(raw), &fields))
+		_, hasDID := fields["did"]
+		assert.Equal(t, did != "", hasDID, "did key present iff a DID is set")
+	}
+}
+
+// TestSessionManager_LegacySessionWithoutDID_Decodes verifies that sessions
+// issued before the DID field existed still load, with no DID, so the change
+// ships without logging anyone out.
+func TestSessionManager_LegacySessionWithoutDID_Decodes(t *testing.T) {
+	t.Parallel()
+	sm := testSessionManager(t)
+
+	legacy := []byte(`{
+		"email": "legacy@example.com",
+		"name": "Legacy User",
+		"groups": ["engineering"],
+		"expires_at": "` + time.Now().Add(time.Hour).UTC().Format(time.RFC3339Nano) + `",
+		"type": "cookie"
+	}`)
+	nonce := make([]byte, sm.primary.NonceSize())
+	_, err := rand.Read(nonce)
+	require.NoError(t, err)
+	cookieValue := base64.RawURLEncoding.EncodeToString(sm.primary.Seal(nonce, nonce, legacy, nil))
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: cookieValue})
+	loaded, err := sm.Load(req)
+	require.NoError(t, err)
+	require.NotNil(t, loaded, "legacy cookie must decode cleanly")
+	assert.Equal(t, "legacy@example.com", loaded.Email)
+	assert.Equal(t, "", loaded.DID, "missing `did` key must leave DID empty")
+}
+
+// TestHandler_LegacySessionForwardsNoDID covers the legacy session end to end:
+// it is served normally and the upstream sees no X-Beyond-Did.
+func TestHandler_LegacySessionForwardsNoDID(t *testing.T) {
+	t.Parallel()
+	backend := newRecordingBackend(t)
+	h, sm := newTestHandler(t, backend.srv)
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Host = "grafana.internal"
+	setSession(t, sm, req, "legacy@example.com", []string{"engineering"})
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, "legacy@example.com", backend.last.Get(headerBeyondEmail))
+	assert.Empty(t, beyondDIDValues(backend.last))
+}
+
 func TestSessionManager_Expired(t *testing.T) {
 	t.Parallel()
 	sm := testSessionManager(t)
