@@ -153,6 +153,12 @@ func (h *Handler) SetUserValidator(uv *UserValidator) {
 	h.userValidator = uv
 }
 
+// SetAppPolicySource makes src the source of every route's group policy (see
+// AppPolicySource). Without one, every route uses its allowed_groups.
+func (h *Handler) SetAppPolicySource(src *AppPolicySource) {
+	h.authorizer.SetAppPolicySource(src)
+}
+
 // SetTrustedProxies configures the CIDRs whose appended X-Forwarded-For entries
 // beyond will trust when resolving the client IP. With none set (the default),
 // the immediate TCP peer (RemoteAddr) is always used and X-Forwarded-For is
@@ -163,7 +169,7 @@ func (h *Handler) SetTrustedProxies(prefixes []netip.Prefix) {
 }
 
 // ReloadConfig atomically replaces the authorizer's internal maps and
-// config-derived handler fields.
+// config-derived handler fields, and the policy source's route set.
 //
 // Config is immutable after boot today (ReloadConfig is called only from
 // tests), but it also resets the proxy pool and the bearer-verifier cache so
@@ -171,6 +177,10 @@ func (h *Handler) SetTrustedProxies(prefixes []netip.Prefix) {
 // issuer/audience/JWKS verifiers can't survive a reload.
 func (h *Handler) ReloadConfig(cfg *Config) {
 	h.authorizer.Reload(cfg)
+	// Routes the policy source has not resolved yet deny until it does.
+	if src := h.authorizer.AppPolicySource(); src != nil {
+		src.SetRoutes(appPolicyRoutes(cfg))
+	}
 	h.mu.Lock()
 	h.httpLifetime = cfg.Sessions.HTTPLifetime
 	h.portal = clonePortalConfig(cfg.Portal)

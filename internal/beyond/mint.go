@@ -204,7 +204,7 @@ const (
 )
 
 // mintSessionOK enforces the two gates every beyond-fronted app applies before
-// serving a browser: a valid session, and the app's allowed_groups. It writes
+// serving a browser: a valid session, and the app's group policy. It writes
 // the response and returns false when the request must not proceed.
 //
 // The session's groups are the login-time set. That is deliberate and
@@ -478,7 +478,7 @@ func (h *Handler) handleMintCallback(w http.ResponseWriter, r *http.Request, app
 		return
 	}
 
-	// Enforce allowed_groups from the verified id_token groups BEFORE any
+	// Enforce the group policy on the verified id_token groups BEFORE any
 	// token-create call — the same gate the cookie/bearer/credential paths use.
 	// The access token is discarded unused on denial: zero Authentik writes.
 	host := stripPort(r.Host)

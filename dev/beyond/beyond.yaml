@@ -9,6 +9,10 @@ admin_groups:
   - "authentik Admins"
 
 applications:
+  # The route name is the Authentik application slug. `just up` creates an
+  # `echo` application bound to engineering, so with the Authentik API
+  # configured (.env) its bindings govern this route and allowed_groups is
+  # ignored; allowed_groups applies only when no such application exists.
   echo:
     upstream: http://localhost:18080
     host: echo.localhost

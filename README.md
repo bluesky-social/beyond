@@ -27,7 +27,51 @@ default to `https://<host>/` and, when set explicitly, must remain on the
 application's configured host. Set `hide_from_portal: true` for supporting
 hosts such as a browser API origin.
 
-The config is read once at startup; policy changes require a restart. beyond is stateless — run as many replicas as you like, as long as they share the same `BEYOND_SESSION_SECRET`.
+The config is read once at startup. beyond is stateless — run as many replicas as you like, as long as they share the same `BEYOND_SESSION_SECRET`.
+
+### Access policy from Authentik applications
+
+When the Authentik API is configured (`BEYOND_AUTHENTIK_API_URL` and
+`BEYOND_AUTHENTIK_API_TOKEN`), **a route's name is the slug of the Authentik
+application that governs it**. For the `grafana` route above, Beyond looks up
+the Authentik application `grafana`:
+
+- **The application exists:** its policy bindings are the route's only access
+  list. The route's `allowed_groups` is ignored, and Beyond logs a warning
+  naming the route.
+- **Authentik answers 404:** the route uses its `allowed_groups`.
+- **No answer yet** (Authentik unreachable since startup): the route denies
+  every non-admin request. It does not fall back to `allowed_groups`, which may
+  grant more than Authentik's bindings.
+
+`allowed_groups` therefore stays required, as the fallback. Without the
+Authentik API configured, every route uses its `allowed_groups`.
+
+Beyond evaluates the bindings itself, so it accepts only bindings it can
+evaluate exactly: policy engine mode `any`, with every enabled binding a plain
+group binding (not negated, not expiring). A user passes if they are a member
+of a bound group or of any of its descendant groups, which is how Authentik
+evaluates group bindings. Disabled bindings are ignored. Anything else
+(user or expression-policy bindings, negated or expiring bindings, mode `all`)
+denies every non-admin request to the route. So does an application with no
+enabled bindings: Authentik treats that as open to everyone, but Beyond fails
+closed.
+
+Policies load once before Beyond starts serving and refresh every 60 seconds
+(every 10 seconds while a route is unresolved). If a lookup fails after a
+route has resolved, the route keeps its last-known-good policy. A definitive
+answer (the application now exists, now 404s, or its bindings changed)
+replaces it. Each change is logged with the route's old and new groups.
+`beyond_app_policy_source{app,source}` reports each route's current source
+(`authentik`, `allowed_groups`, `unresolved` or `invalid`), and
+`beyond_app_policy_last_refresh_success_timestamp_seconds` records the last
+refresh in which every route got a definitive answer.
+
+The API token needs only read access. It should belong to a non-superuser
+service account with Authentik's built-in `authentik Read-only` role; the dev
+stack sets one up the same way. Beyond retrieves each application by slug
+because Authentik's application list only returns applications the caller can
+access itself.
 
 For machine protocols whose OAuth discovery begins unauthenticated, an app may
 delegate a narrow set of exact paths to an independently authenticating
@@ -53,7 +97,7 @@ Only requests with no `Authorization` header use this path. Bearer requests
 still receive Beyond's JWT and group-policy checks.
 
 For the delegated paths themselves, Beyond applies no authorization:
-`allowed_groups` is not enforced, no identity is injected, and any client can
+the route's group policy is not enforced, no identity is injected, and any client can
 reach them. Beyond strips inbound `X-Beyond-*` identity headers and forwards
 the request. The upstream is therefore the sole access-control boundary for
 every delegated path and must authenticate it (for example, by returning a
@@ -76,7 +120,7 @@ applications:
 
 These paths accept either no `Authorization` header for protocol bootstrap or
 a non-empty `Bearer` credential, which is forwarded unchanged. Beyond does not
-apply `allowed_groups` or inject identity. Other schemes and all unlisted,
+apply the route's group policy or inject identity. Other schemes and all unlisted,
 nearby, escaped, or non-canonical paths retain Beyond's normal authentication.
 Use this only when the upstream independently fails closed on protected paths.
 
@@ -166,6 +210,8 @@ docker run --rm \
   -e BEYOND_OIDC_ISSUER=https://auth.example.com/application/o/beyond/ \
   -e BEYOND_OIDC_CLIENT_ID=... \
   -e BEYOND_OIDC_CLIENT_SECRET=... \
+  -e BEYOND_AUTHENTIK_API_URL=http://authentik:9000 \
+  -e BEYOND_AUTHENTIK_API_TOKEN=... \
   -e BEYOND_DB_URL=postgresql://... \
   ghcr.io/bluesky-social/beyond:latest
 ```
@@ -195,6 +241,11 @@ or locally trust that certificate when using a browser. Sign in with
 `test@beyond.local` / `test`.
 
 Unit tests need no infrastructure; e2e/DB tests want the dev stack up and skip themselves otherwise. The dev Authentik login is `test@beyond.local` / `test`.
+
+`just up` also creates Beyond's Authentik API identity the way prod has it (a
+non-superuser service account with the `authentik Read-only` role; its token
+is in `.env`) and an `echo` application bound to `engineering`, so the dev
+`echo` route takes its policy from Authentik.
 
 ## Releases and commit messages
 

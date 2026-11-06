@@ -267,7 +267,7 @@ func (h *Handler) handleCredential(w http.ResponseWriter, r *http.Request, app *
 	credentialValidations.WithLabelValues("ok").Inc()
 	logEntry.UserGroups = identity.Groups
 
-	// Same policy gate as the cookie/bearer paths: allowed_groups + admin
+	// Same policy gate as the cookie/bearer paths: group policy + admin
 	// bypass, evaluated on the normalized groups that will also be forwarded.
 	allowed, _ := h.authorizer.CheckHTTP(host, identity.Groups)
 	if !allowed {
