@@ -82,11 +82,46 @@ const (
 	headerBeyondGroups = "X-Beyond-Groups"
 	headerBeyondDID    = "X-Beyond-Did"
 
-	// beyondHeaderPrefix is the (case-insensitive) prefix used to detect
-	// and strip any inbound identity headers before we inject our own.
-	// Any header whose lowercased name starts with this prefix is removed.
+	// beyondHeaderPrefix is the prefix used to detect and strip any
+	// inbound identity headers before we inject our own. Any header whose
+	// name starts with it, compared as normalizeHeaderName does, is removed.
 	beyondHeaderPrefix = "x-beyond-"
 )
+
+// identityHeaderNames are the identity headers beyond injects. A configurable
+// header, such as grafana_role_projection.header, must not name one: it is
+// set after these and would overwrite the verified value.
+var identityHeaderNames = []string{
+	headerBeyondUser,
+	headerBeyondEmail,
+	headerBeyondName,
+	headerBeyondGroups,
+	headerBeyondDID,
+}
+
+// normalizeHeaderName lowercases name and reads '_' as '-'. CGI-style upstream
+// stacks (WSGI, Rack, PHP) expose X_Beyond_Did and X-Beyond-Did as the same
+// variable, so beyond must treat the two spellings as one name or a client
+// could forge an identity header under the underscore spelling.
+func normalizeHeaderName(name string) string {
+	return strings.ReplaceAll(strings.ToLower(name), "_", "-")
+}
+
+// isBeyondHeader reports whether name falls in beyond's X-Beyond-* namespace.
+func isBeyondHeader(name string) bool {
+	return strings.HasPrefix(normalizeHeaderName(name), beyondHeaderPrefix)
+}
+
+// isIdentityHeaderName reports whether name is one of identityHeaderNames.
+func isIdentityHeaderName(name string) bool {
+	n := normalizeHeaderName(name)
+	for _, h := range identityHeaderNames {
+		if n == normalizeHeaderName(h) {
+			return true
+		}
+	}
+	return false
+}
 
 // validateAndNormalizeIdentity takes the raw claim values extracted from an
 // OIDC id_token and returns a clean Identity, or an error describing the
@@ -381,8 +416,8 @@ func truncateAtRune(s string, maxBytes int) string {
 // Two properties are enforced here:
 //
 //  1. Anti-spoofing. A client cannot smuggle identity headers through beyond
-//     by setting X-Beyond-* themselves; the strip loop clears the whole
-//     namespace before we inject anything.
+//     by setting X-Beyond-* themselves, in any casing or with '_' for '-';
+//     the strip loop clears the whole namespace before we inject anything.
 //  2. Empty-value suppression. Fields that happen to be empty (notably
 //     X-Beyond-Name on legacy sessions issued before the Name field was
 //     added) are not written at all, rather than written as empty
@@ -398,7 +433,7 @@ func injectBeyondHeaders(r *http.Request, identity *Identity) {
 	// request. Iterating a copy is unnecessary because deletion during
 	// a range over an http.Header (which is a map) is legal in Go.
 	for key := range r.Header {
-		if strings.HasPrefix(strings.ToLower(key), beyondHeaderPrefix) {
+		if isBeyondHeader(key) {
 			delete(r.Header, key)
 		}
 	}

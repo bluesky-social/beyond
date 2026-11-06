@@ -571,24 +571,37 @@ func TestInjectBeyondHeaders_DID(t *testing.T) {
 	}
 }
 
-// beyondDIDValues returns every X-Beyond-Did value in h, matching the name
-// case-insensitively so a non-canonical key can't hide from the assertion.
-func beyondDIDValues(h http.Header) []string {
+// beyondHeaderValues returns every value in h for the header name, ignoring
+// case and reading '_' as '-', so neither a non-canonical key nor an
+// underscore spelling (which CGI-style upstreams read as the same header) can
+// hide from an assertion. It deliberately doesn't call normalizeHeaderName, so
+// a regression there can't also blind the assertion.
+func beyondHeaderValues(h http.Header, name string) []string {
+	norm := func(s string) string { return strings.ReplaceAll(strings.ToLower(s), "_", "-") }
 	var vals []string
 	for k, v := range h {
-		if strings.EqualFold(k, headerBeyondDID) {
+		if norm(k) == norm(name) {
 			vals = append(vals, v...)
 		}
 	}
 	return vals
 }
 
-// addSpoofedDID sets client-supplied X-Beyond-Did values the way they arrive
-// off the wire: Go's server canonicalizes header names, so every casing a
-// client sends lands on the canonical key.
+func beyondDIDValues(h http.Header) []string {
+	return beyondHeaderValues(h, headerBeyondDID)
+}
+
+// addSpoofedDID sets client-supplied X-Beyond-Did values in every spelling a
+// client can use: any casing (canonicalized by Header.Set), underscores for
+// hyphens, and a key outside canonical form. Go's server canonicalizes names
+// read off the wire, so the last is reachable only in-process; it pins that
+// the strip deletes by map key.
 func addSpoofedDID(r *http.Request) {
 	r.Header.Set("x-beyond-did", spoofedDID)
 	r.Header.Add("X-BEYOND-DID", "did:web:attacker.example")
+	r.Header.Set("X_Beyond_Did", spoofedDID)
+	r.Header.Set("x_beyond-did", spoofedDID)
+	r.Header["x-beyond-did"] = []string{spoofedDID}
 }
 
 // sessionCookieWithDID returns a session cookie for alice in engineering
@@ -739,4 +752,60 @@ func TestXBeyondDid_ClientSpoofNeverReachesUpstream(t *testing.T) {
 		require.Equal(t, http.StatusOK, rec.Code)
 		assert.Empty(t, beyondDIDValues(backend.last))
 	})
+}
+
+func TestIsBeyondHeader(t *testing.T) {
+	t.Parallel()
+	for _, name := range []string{
+		"X-Beyond-Did", "x-beyond-did", "X-BEYOND-EMAIL", "X_Beyond_Did",
+		"x_beyond-email", "X-Beyond_Groups", "X_beyond_user", "X-Beyond-Role",
+	} {
+		assert.True(t, isBeyondHeader(name), "want in namespace: %q", name)
+	}
+	for _, name := range []string{
+		"", "X-Beyond", "X-Beyondx-Did", "XBeyond-Did", "X--Beyond-Did",
+		"X-Forwarded-For", "Beyond-Did", "X.Beyond.Did",
+	} {
+		assert.False(t, isBeyondHeader(name), "want outside namespace: %q", name)
+	}
+}
+
+func TestIsIdentityHeaderName(t *testing.T) {
+	t.Parallel()
+	for _, name := range []string{
+		"X-Beyond-User", "X-Beyond-Email", "X-Beyond-Name", "X-Beyond-Groups", "X-Beyond-Did",
+		"x-beyond-did", "X-BEYOND-GROUPS", "X_Beyond_Email", "x_beyond-did", "X-Beyond_Name",
+	} {
+		assert.True(t, isIdentityHeaderName(name), "want reserved: %q", name)
+	}
+	for _, name := range []string{"X-Beyond-Role", "X-Beyond-Did-Role", "X-Beyond-Emails", "X-Email", ""} {
+		assert.False(t, isIdentityHeaderName(name), "want not reserved: %q", name)
+	}
+}
+
+// TestBeyondHeaders_UnderscoreSpoofsStrippedOnSessionPath covers the identity
+// headers other than X-Beyond-Did: underscore spellings and non-canonical keys
+// must not reach the upstream alongside, or instead of, the verified values.
+func TestBeyondHeaders_UnderscoreSpoofsStrippedOnSessionPath(t *testing.T) {
+	t.Parallel()
+	backend := newRecordingBackend(t)
+	h, _ := newTestHandler(t, backend.srv)
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Host = "grafana.internal"
+	req.AddCookie(sessionCookieWithDID(t, ""))
+	req.Header.Set("X_Beyond_Email", "attacker@evil.com")
+	req.Header.Set("X_Beyond_Groups", "authentik Admins")
+	req.Header.Set("x_beyond-user", "attacker@evil.com")
+	req.Header.Set("X_BEYOND_NAME", "Attacker Evil")
+	req.Header["x-beyond-groups"] = []string{"authentik Admins"}
+	rec := httptest.NewRecorder()
+
+	h.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, []string{"alice@example.com"}, beyondHeaderValues(backend.last, headerBeyondEmail))
+	assert.Equal(t, []string{"alice@example.com"}, beyondHeaderValues(backend.last, headerBeyondUser))
+	assert.Equal(t, []string{"engineering|platform"}, beyondHeaderValues(backend.last, headerBeyondGroups))
+	// The session carries no name, so no value at all may arrive.
+	assert.Empty(t, beyondHeaderValues(backend.last, headerBeyondName))
 }

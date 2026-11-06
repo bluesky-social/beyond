@@ -752,6 +752,9 @@ func validateProjectionHeader(header string) error {
 	if strings.TrimSpace(header) != header || !isHTTPToken(header) {
 		return fmt.Errorf("%q is not a valid HTTP header name", header)
 	}
+	if isIdentityHeaderName(header) {
+		return fmt.Errorf("%q names an identity header beyond injects; the projected value would overwrite it", header)
+	}
 	if !strings.HasPrefix(strings.ToLower(header), beyondHeaderPrefix) {
 		return fmt.Errorf("%q must use the X-Beyond-* namespace so inbound spoofed values are stripped", header)
 	}

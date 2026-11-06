@@ -117,7 +117,9 @@ sets authoritative `X-Forwarded-Host` and `X-Forwarded-Proto` headers as usual.
 ## Identity headers for upstream services
 
 Beyond removes every client-supplied `X-Beyond-*` header before proxying a
-request. For an authenticated request, it adds the verified identity to the
+request, in any letter case and also when spelled with `_` for `-` (such as
+`X_Beyond_Email`), because CGI-style servers treat both spellings as the same
+header. For an authenticated request, it adds the verified identity to the
 outbound request:
 
 | Header | Value | How to use it |
