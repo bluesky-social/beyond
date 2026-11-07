@@ -19,7 +19,7 @@ services:
       retries: 10
 
   clickhouse:
-    image: clickhouse/clickhouse-server:25.12-alpine@sha256:7d93fb39bb2bfc8509bd621241db974e41041ac0ae626a5b06e172431fc709f7
+    image: clickhouse/clickhouse-server:26.10-alpine@sha256:1b09f476eb1109522cfc0e8e4ddf6a4305263e7cdd310f7bd1d3fd29dfcb8b33
     environment:
       CLICKHOUSE_DB: beyond
       CLICKHOUSE_USER: beyond
