@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.2.0 (2026-11-07)
+
+## What's Changed
+* fix(deps): update module github.com/go-jose/go-jose/v4 to v4.1.8 by @renovate[bot] in https://github.com/bluesky-social/beyond/pull/43
+* feat: forward atproto DID as X-Beyond-Did by @amckinley in https://github.com/bluesky-social/beyond/pull/45
+* feat: take route policy from same-named Authentik applications by @amckinley in https://github.com/bluesky-social/beyond/pull/46
+
+
+**Full Changelog**: https://github.com/bluesky-social/beyond/compare/v0.1.8...v0.2.0
+
 ## 0.1.8 (2026-11-04)
 
 ## What's Changed
