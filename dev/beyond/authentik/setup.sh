@@ -57,7 +57,20 @@ print(' '.join(sorted({'openid', 'email', 'profile', 'goauthentik.io/api'} - hav
             missing="${missing} ${slug}"
         fi
     done
+    if [ -z "$(readonly_role_pk 2>/dev/null)" ]; then
+        missing="${missing} authentik-Read-only-role"
+    fi
     printf '%s' "${missing# }"
+}
+
+# Authentik's auto-generated read-only role (view_* on every object). The
+# name filter is matched client-side because the API silently ignores
+# filters it does not know.
+readonly_role_pk() {
+    api GET "/api/v3/rbac/roles/?name=authentik%20Read-only&page_size=100" | python3 -c "
+import sys, json
+print(next((r['pk'] for r in json.load(sys.stdin)['results'] if r['name'] == 'authentik Read-only'), ''))
+"
 }
 
 echo "  waiting for default blueprint objects..."
@@ -276,6 +289,72 @@ if [ "$EXISTING_USER" = "0" ]; then
 else
     echo "  test user already exists"
 fi
+PLATFORM_GRP_PK=$(api GET "/api/v3/core/groups/?name=platform" | python3 -c "import sys,json; print(json.load(sys.stdin)['results'][0]['pk'])")
+
+# --- Beyond's Authentik API identity ---
+# Mirrors prod: a non-superuser service account whose only permissions come
+# from Authentik's auto-generated "authentik Read-only" role, granted through
+# a group. Beyond uses it for user validation and to read application policy
+# bindings. The token key is fixed so .env can carry it; development only.
+DEV_API_USER="beyond-dev-api-reader"
+DEV_API_TOKEN="beyond-dev-api-reader-token"
+echo "  configuring read-only API service account..."
+READONLY_ROLE_PK=$(readonly_role_pk)
+API_USER_PK=$(api GET "/api/v3/core/users/?username=${DEV_API_USER}" | python3 -c "import sys,json; r=json.load(sys.stdin)['results']; print(r[0]['pk'] if r else '')")
+if [ -z "$API_USER_PK" ]; then
+    API_USER_PK=$(api POST "/api/v3/core/users/" -d "{
+        \"username\": \"${DEV_API_USER}\",
+        \"name\": \"Beyond API reader (dev)\",
+        \"type\": \"service_account\",
+        \"path\": \"goauthentik.io/service-accounts\",
+        \"is_active\": true
+    }" | python3 -c "import sys,json; print(json.load(sys.stdin)['pk'])")
+fi
+READERS_GRP_PK=$(api GET "/api/v3/core/groups/?name=beyond-dev-api-readers" | python3 -c "import sys,json; r=json.load(sys.stdin)['results']; print(r[0]['pk'] if r else '')")
+READERS_BODY="{\"name\":\"beyond-dev-api-readers\",\"roles\":[\"${READONLY_ROLE_PK}\"],\"users\":[${API_USER_PK}]}"
+if [ -z "$READERS_GRP_PK" ]; then
+    api POST "/api/v3/core/groups/" -d "$READERS_BODY" > /dev/null
+else
+    api PATCH "/api/v3/core/groups/${READERS_GRP_PK}/" -d "$READERS_BODY" > /dev/null
+fi
+if ! api GET "/api/v3/core/tokens/${DEV_API_USER}/" > /dev/null 2>&1; then
+    api POST "/api/v3/core/tokens/" -d "{
+        \"identifier\": \"${DEV_API_USER}\",
+        \"intent\": \"api\",
+        \"user\": ${API_USER_PK},
+        \"expiring\": false
+    }" > /dev/null
+fi
+api POST "/api/v3/core/tokens/${DEV_API_USER}/set_key/" -d "{\"key\":\"${DEV_API_TOKEN}\"}" > /dev/null
+
+# --- Application policy fixtures ---
+# A Beyond route named like an Authentik application takes that application's
+# group bindings as its only access list. `echo` (the dev route) is bound to
+# engineering; beyond-e2e-platform is bound to platform for the e2e tests.
+# Look applications up by slug: the list endpoint only returns applications
+# the caller may access, which hides group-bound ones from akadmin.
+ensure_bound_app() {
+    local slug="$1" name="$2" group_pk="$3" app_pk
+    if ! app_pk=$(api GET "/api/v3/core/applications/${slug}/" 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin)['pk'])" 2>/dev/null); then
+        echo "  creating ${slug} application..."
+        app_pk=$(api POST "/api/v3/core/applications/" -d "{\"name\":\"${name}\",\"slug\":\"${slug}\"}" | python3 -c "import sys,json; print(json.load(sys.stdin)['pk'])")
+    fi
+    if ! api GET "/api/v3/policies/bindings/?target=${app_pk}&page_size=100" | python3 -c "
+import sys, json
+sys.exit(0 if any(b['target'] == '${app_pk}' and b['group'] == '${group_pk}' for b in json.load(sys.stdin)['results']) else 1)
+"; then
+        api POST "/api/v3/policies/bindings/" -d "{
+            \"target\": \"${app_pk}\",
+            \"group\": \"${group_pk}\",
+            \"order\": 0,
+            \"enabled\": true,
+            \"negate\": false,
+            \"timeout\": 30
+        }" > /dev/null
+    fi
+}
+ensure_bound_app echo "Echo (dev)" "$ENG_GRP_PK"
+ensure_bound_app beyond-e2e-platform "Beyond e2e: platform only" "$PLATFORM_GRP_PK"
 
 # Verify OIDC is working.
 echo ""
@@ -293,3 +372,4 @@ echo "  OIDC discovery: ${AUTHENTIK_URL}/application/o/beyond-dev/.well-known/op
 echo "  client_id:      beyond-dev-client-id"
 echo "  client_secret:  beyond-dev-client-secret"
 echo "  test user:      test@beyond.local / test (in 'engineering' group)"
+echo "  API token:      ${DEV_API_TOKEN} (read-only service account ${DEV_API_USER})"

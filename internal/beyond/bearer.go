@@ -59,7 +59,7 @@ func (bv *bearerVerifiers) forApp(app *Application) tokenverify.Verifier {
 
 // handleBearer authenticates a bearer-carrying request against app.BearerAuth
 // and, on success, runs the SAME group authorization the cookie path uses
-// (allowed_groups + admin_groups bypass) before proxying. Responses on the
+// (group policy + admin_groups bypass) before proxying. Responses on the
 // failure paths are plain 401/403/429 — never a 302 to the IdP, never a
 // Set-Cookie — because the caller is a CLI or a browser app's API client,
 // neither of which can follow a login redirect.
@@ -192,7 +192,7 @@ func (h *Handler) handleBearer(w http.ResponseWriter, r *http.Request, app *Appl
 	}
 	logEntry.UserGroups = identity.Groups
 
-	// Same policy gate as the cookie path: allowed_groups + admin bypass,
+	// Same policy gate as the cookie path: group policy + admin bypass,
 	// evaluated on the normalized groups that will also be forwarded upstream.
 	allowed, _ := h.authorizer.CheckHTTP(host, identity.Groups)
 	if !allowed {

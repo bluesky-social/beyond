@@ -127,13 +127,13 @@ func newServeCmd(configPath *string) *cli.Command {
 			},
 			&cli.StringFlag{
 				Name:        "authentik-api-url",
-				Usage:       "Authentik API base URL for user validation (e.g. http://authentik:9000)",
+				Usage:       "Authentik API base URL for user validation and application policy (e.g. http://authentik:9000)",
 				Sources:     cli.EnvVars("BEYOND_AUTHENTIK_API_URL"),
 				Destination: &authentikAPIURL,
 			},
 			&cli.StringFlag{
 				Name:        "authentik-api-token",
-				Usage:       "Authentik API bearer token for user validation",
+				Usage:       "Authentik API bearer token (read-only) for user validation and application policy",
 				Sources:     cli.EnvVars("BEYOND_AUTHENTIK_API_TOKEN"),
 				Destination: &authentikAPIToken,
 			},
@@ -228,12 +228,25 @@ func newServeCmd(configPath *string) *cli.Command {
 					"count", len(trustedPrefixes))
 			}
 
-			//  Create user validator if Authentik API is configured.
+			// Create the user validator and the application policy source if
+			// the Authentik API is configured. Without it every route keeps
+			// using its allowed_groups.
+			if err := validateAuthentikAPIConfig(authentikAPIURL, authentikAPIToken); err != nil {
+				return err
+			}
 			if authentikAPIURL != "" && authentikAPIToken != "" {
 				userValidator := NewUserValidator(authentikAPIURL, authentikAPIToken)
 				handler.SetUserValidator(userValidator)
 				defer userValidator.Stop()
 				logger.Info("user validation enabled", "api_url", authentikAPIURL)
+
+				// Start loads every route synchronously before the server
+				// starts; routes it cannot resolve deny until they do.
+				appPolicies := NewAppPolicySource(authentikAPIURL, authentikAPIToken, appPolicyRoutes(cfg), logger)
+				appPolicies.Start(ctx)
+				defer appPolicies.Stop()
+				handler.SetAppPolicySource(appPolicies)
+				logger.Info("authentik application policies enabled", "routes", len(cfg.Applications))
 			}
 
 			// Create OIDCAuth if --oidc-issuer is provided.

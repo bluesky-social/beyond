@@ -598,6 +598,90 @@ func truncate(s string, n int) string {
 	return s[:n]
 }
 
+// devAPIReaderToken is the dev stack's Beyond API token (see
+// dev/beyond/authentik/setup.sh): a non-superuser service account holding only
+// Authentik's auto-generated read-only role, the same shape as prod's.
+const devAPIReaderToken = "beyond-dev-api-reader-token"
+
+// appPolicyServer is beyondServer with a single route named route (and so
+// governed by the Authentik application of that slug, if one exists), whose
+// policy and user groups are read from the dev Authentik with the read-only
+// API token.
+func appPolicyServer(t *testing.T, route string, allowedGroups []string) (*httptest.Server, *AppPolicySource) {
+	t.Helper()
+
+	sharedOIDCProviderOnce.Do(initOIDCProvider)
+	if !authentikAvailable {
+		t.Skipf("Authentik not reachable at %s (run `just up`)", authentikURL)
+	}
+
+	sm, err := NewSessionManager([][]byte{[]byte("0123456789abcdef0123456789abcdef")}, 12*time.Hour)
+	require.NoError(t, err)
+	cfg := &Config{
+		Sessions:    SessionConfig{HTTPLifetime: 12 * time.Hour},
+		AdminGroups: []string{"authentik Admins"},
+		Applications: map[string]*Application{
+			route: {Name: route, Upstream: "http://localhost:18080", Host: "PLACEHOLDER", AllowedGroups: allowedGroups},
+		},
+	}
+	handler := NewHandler(cfg, sm, &AccessLogger{Logger: testLogger()})
+	srv := httptest.NewTLSServer(handler)
+	t.Cleanup(srv.Close)
+	srvURL, err := url.Parse(srv.URL)
+	require.NoError(t, err)
+	cfg.Applications[route].Host = srvURL.Hostname()
+	handler.ReloadConfig(cfg)
+
+	uv := NewUserValidator(authentikURL, devAPIReaderToken)
+	t.Cleanup(uv.Stop)
+	handler.SetUserValidator(uv)
+	policies := NewAppPolicySource(authentikURL, devAPIReaderToken, appPolicyRoutes(cfg), testLogger())
+	policies.Start(t.Context())
+	t.Cleanup(policies.Stop)
+	handler.SetAppPolicySource(policies)
+
+	handler.SetOIDCAuth(&OIDCAuth{
+		provider: sharedOIDCProvider,
+		config: oauth2.Config{
+			ClientID: "beyond-dev-client-id", ClientSecret: "beyond-dev-client-secret",
+			Endpoint: sharedOIDCProvider.Endpoint(), Scopes: []string{oidc.ScopeOpenID, "profile", "email", "groups"},
+		},
+		verifier: sharedOIDCProvider.Verifier(&oidc.Config{ClientID: "beyond-dev-client-id"}),
+	})
+	return srv, policies
+}
+
+// TestE2E_AuthentikApplicationPolicy drives a real login through routes whose
+// policy comes from the dev Authentik, read with the read-only non-superuser
+// token. The test user is in engineering only.
+func TestE2E_AuthentikApplicationPolicy(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		route         string
+		allowedGroups []string
+		wantSource    string
+		wantStatus    int
+	}{
+		// echo is bound to engineering; the route's own list would deny.
+		{route: "echo", allowedGroups: []string{"platform"}, wantSource: appPolicySourceAuthentik, wantStatus: http.StatusOK},
+		// beyond-e2e-platform is bound to platform; the route's own list would allow.
+		{route: "beyond-e2e-platform", allowedGroups: []string{"engineering"}, wantSource: appPolicySourceAuthentik, wantStatus: http.StatusForbidden},
+		// No such application: the route's own list applies.
+		{route: "beyond-e2e-no-such-app", allowedGroups: []string{"engineering"}, wantSource: appPolicySourceAllowedGroups, wantStatus: http.StatusOK},
+	}
+	for _, tt := range tests {
+		t.Run(tt.route, func(t *testing.T) {
+			t.Parallel()
+			srv, policies := appPolicyServer(t, tt.route, tt.allowedGroups)
+			require.Equal(t, tt.wantSource, policies.policyFor(tt.route).source,
+				"policy source for %q (re-run `just up` if the dev fixtures are missing)", tt.route)
+
+			resp, body := completeDevOIDCLogin(t, srv, "/")
+			assert.Equal(t, tt.wantStatus, resp.StatusCode, "body: %s", truncate(string(body), 300))
+		})
+	}
+}
+
 func TestE2E_ForbiddenApp(t *testing.T) {
 	t.Parallel()
 	// A user without the right group gets 403.

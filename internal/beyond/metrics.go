@@ -72,6 +72,30 @@ var (
 		Buckets:   []float64{0.0001, 0.001, 0.01, 0.05, 0.1, 0.5, 1, 5},
 	}, []string{"source", "result"})
 
+	// --- Authentik application policy ---
+
+	// appPolicySource is 1 for the source each route's group policy currently
+	// comes from and 0 for the others. Labels: app (route name; bounded by
+	// config), source — authentik (the same-named Authentik application's
+	// bindings), allowed_groups (no such application), unresolved (never
+	// looked up successfully) or invalid (unsupported binding shape). The
+	// last two deny every non-admin request on the route.
+	appPolicySource = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: "beyond",
+		Name:      "app_policy_source",
+		Help:      "Current source of each route's group policy (1 = active source).",
+	}, []string{"app", "source"})
+
+	// appPolicyLastRefreshSuccess is the Unix time of the last refresh in
+	// which every route got a definitive answer from Authentik. While it is
+	// stale, some route is running on its last-known-good policy (or, if it
+	// never resolved, denying).
+	appPolicyLastRefreshSuccess = promauto.NewGauge(prometheus.GaugeOpts{
+		Namespace: "beyond",
+		Name:      "app_policy_last_refresh_success_timestamp_seconds",
+		Help:      "Unix time of the last fully successful Authentik application policy refresh.",
+	})
+
 	// --- OIDC ---
 
 	// oidcCallbackDuration tracks OIDC callback processing time.

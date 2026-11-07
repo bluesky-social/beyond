@@ -22,6 +22,10 @@ type Authorizer struct {
 	hostToApp    map[string]*Application // HTTP host -> app
 	applications []*Application
 	adminGroups  map[string]bool
+	// appPolicies, when set, resolves each route's group policy from the
+	// same-named Authentik application. When nil every route uses its
+	// allowed_groups.
+	appPolicies *AppPolicySource
 }
 
 // NewAuthorizer builds an Authorizer from cfg.
@@ -41,6 +45,20 @@ func (az *Authorizer) Reload(cfg *Config) {
 	az.mu.Unlock()
 }
 
+// SetAppPolicySource makes src the source of every route's group policy.
+func (az *Authorizer) SetAppPolicySource(src *AppPolicySource) {
+	az.mu.Lock()
+	az.appPolicies = src
+	az.mu.Unlock()
+}
+
+// AppPolicySource returns the attached policy source, or nil.
+func (az *Authorizer) AppPolicySource() *AppPolicySource {
+	az.mu.RLock()
+	defer az.mu.RUnlock()
+	return az.appPolicies
+}
+
 // AllowedApplications returns only applications permitted by userGroups. The
 // result is detached from the live config, contains no policy or upstream
 // details, and is sorted for stable rendering.
@@ -54,7 +72,7 @@ func (az *Authorizer) AllowedApplications(userGroups []string) []PortalApplicati
 		if app.HideFromPortal {
 			continue
 		}
-		if !isAdmin && !applicationAllowsAnyGroup(app, userGroups) {
+		if !isAdmin && !applicationAllowsAnyGroup(app, userGroups, az.appPolicies) {
 			continue
 		}
 		apps = append(apps, PortalApplication{
@@ -99,7 +117,22 @@ func (az *Authorizer) ApplicationNames() []string {
 	return names
 }
 
-func applicationAllowsAnyGroup(app *Application, userGroups []string) bool {
+// applicationAllowsAnyGroup reports whether userGroups satisfy app's group
+// policy. With a policy source, an Authentik application named like the route
+// replaces allowed_groups entirely; allowed_groups apply only when Authentik
+// has definitively no such application. A route whose policy is unresolved or
+// invalid denies: allowed_groups may be wider than Authentik's bindings.
+func applicationAllowsAnyGroup(app *Application, userGroups []string, policies *AppPolicySource) bool {
+	if policies != nil {
+		policy := policies.policyFor(app.Name)
+		switch policy.source {
+		case appPolicySourceAuthentik:
+			return policy.allowsAny(userGroups)
+		case appPolicySourceAllowedGroups:
+		default:
+			return false
+		}
+	}
 	for _, userGroup := range userGroups {
 		for _, allowedGroup := range app.AllowedGroups {
 			if userGroup == allowedGroup {
@@ -121,6 +154,7 @@ func (az *Authorizer) CheckHTTP(host string, userGroups []string) (bool, *Applic
 	az.mu.RLock()
 	app, ok := az.hostToApp[host]
 	isAdmin := az.isAdmin(userGroups)
+	policies := az.appPolicies
 	az.mu.RUnlock()
 
 	if !ok {
@@ -129,7 +163,7 @@ func (az *Authorizer) CheckHTTP(host string, userGroups []string) (bool, *Applic
 	if isAdmin {
 		return true, app
 	}
-	if applicationAllowsAnyGroup(app, userGroups) {
+	if applicationAllowsAnyGroup(app, userGroups, policies) {
 		return true, app
 	}
 	return false, app

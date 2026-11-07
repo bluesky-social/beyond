@@ -43,7 +43,7 @@ type Application struct {
 	Description    string   `yaml:"description"`
 	LaunchURL      string   `yaml:"launch_url"`
 	HideFromPortal bool     `yaml:"hide_from_portal"`
-	AllowedGroups  []string `yaml:"allowed_groups"`
+	AllowedGroups  []string `yaml:"allowed_groups"` // replaced by a same-named Authentik application's bindings; see AppPolicySource
 	// PreserveHost sends the application's configured public hostname in the
 	// upstream HTTP Host header instead of the upstream service address. Use it
 	// for upstreams that construct protocol metadata or absolute URLs from Host.
@@ -75,9 +75,9 @@ type Application struct {
 	// unauthenticated request and whose upstream must return the protocol's
 	// 401/metadata response itself.
 	//
-	// Beyond does not apply allowed_groups to these paths. The upstream is the
-	// sole authorization boundary for them and must not expose data or actions
-	// before it authenticates the request.
+	// Beyond does not apply the route's group policy to these paths. The
+	// upstream is the sole authorization boundary for them and must not expose
+	// data or actions before it authenticates the request.
 	//
 	// The setting is accepted only together with bearer_auth. Requests carrying
 	// Authorization are never eligible: their JWT still follows beyond's normal
@@ -87,7 +87,7 @@ type Application struct {
 	// authentication boundary is deliberately delegated to the upstream. A
 	// matching request may carry either no Authorization header (protocol
 	// bootstrap) or a non-empty Bearer credential; Beyond does not validate the
-	// credential or apply allowed_groups, and forwards it unchanged.
+	// credential or apply the route's group policy, and forwards it unchanged.
 	//
 	// This is for opaque-token protocols whose upstream can authenticate the
 	// bearer but Beyond cannot. The upstream MUST fail closed on every protected
@@ -104,7 +104,7 @@ type Application struct {
 // BearerAuthConfig enables OIDC access-token authentication for an
 // application: a request carrying `Authorization: Bearer <jwt>` is verified
 // at the edge (signature via JWKS, issuer, audience, expiry) and its groups
-// claim feeds the same allowed_groups / admin_groups policy the cookie path
+// claim feeds the same group policy and admin_groups bypass the cookie path
 // uses. Apps without this block reject bearer-carrying requests outright.
 //
 // Issuer and JWKSURL are deliberately separate (split-horizon): the token's
