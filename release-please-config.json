@@ -7,7 +7,11 @@
       "include-component-in-tag": false,
       "changelog-type": "github",
       "changelog-path": "CHANGELOG.md",
-      "bump-minor-pre-major": true
+      "bump-minor-pre-major": true,
+      "exclude-paths": [
+        "docs",
+        ".github"
+      ]
     }
   }
 }
