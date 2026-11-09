@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.2.1 (2026-11-09)
+
+## What's Changed
+* fix(deps): update module github.com/andybalholm/brotli to v1.2.8 by @renovate[bot] in https://github.com/bluesky-social/beyond/pull/47
+* fix(deps): update module github.com/go-jose/go-jose/v4 to v4.1.9 by @renovate[bot] in https://github.com/bluesky-social/beyond/pull/50
+* fix(deps): update container image digests by @renovate[bot] in https://github.com/bluesky-social/beyond/pull/51
+* fix(deps): update postgres:17-alpine docker digest to 3540c03 by @renovate[bot] in https://github.com/bluesky-social/beyond/pull/52
+
+
+**Full Changelog**: https://github.com/bluesky-social/beyond/compare/v0.2.0...v0.2.1
+
 ## 0.2.0 (2026-11-07)
 
 ## What's Changed
