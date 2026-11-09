@@ -271,6 +271,10 @@ tags `vX.Y.Z` and builds `ghcr.io/bluesky-social/beyond:vX.Y.Z` and, after re-ch
   09:00-16:00 PT. Otherwise a human merges it.
 - Any human-authored commit in that range, even one that doesn't release on
   its own, means a human merges the next Release PR.
+- A commit that changes only files under `docs/` or `.github/`
+  (`exclude-paths` in `release-please-config.json`) doesn't release on
+  its own and doesn't count as human-authored. Root files like
+  `README.md` still count: release-please excludes directories only.
 - Label the Release PR `release:manual` to hold a release.
 
 **Dependencies** come from Renovate with the [org preset](https://github.com/bluesky-social/.github/blob/main/renovate/default.json)
