@@ -35,7 +35,7 @@ services:
       retries: 10
 
   redis:
-    image: redis:7-alpine@sha256:c5d34a98396a4775e223c74e929162c35c5a2182901ba26b50ade939941ce14b
+    image: redis:8-alpine@sha256:71885d8cc6e42f2bc0aa2eb853bfc4be200b5108a46ac50e117ae1df0531fb80
 
   authentik-server:
     image: ghcr.io/goauthentik/server:2026.8.0
