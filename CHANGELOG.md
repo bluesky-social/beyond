@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.2.2 (2026-11-14)
+
+## What's Changed
+* ci: exclude docs and .github from releases by @sarahmaeve in https://github.com/bluesky-social/beyond/pull/53
+* fix(deps): update go dependencies by @renovate[bot] in https://github.com/bluesky-social/beyond/pull/55
+* fix(deps): update go module directive to v1.27.4 by @renovate[bot] in https://github.com/bluesky-social/beyond/pull/57
+* fix(deps): update go dependencies by @renovate[bot] in https://github.com/bluesky-social/beyond/pull/56
+* fix(deps): update golang docker tag to v1.27.4 by @renovate[bot] in https://github.com/bluesky-social/beyond/pull/58
+* chore(deps): update dependency go to v1.27.4 by @renovate[bot] in https://github.com/bluesky-social/beyond/pull/59
+
+
+**Full Changelog**: https://github.com/bluesky-social/beyond/compare/v0.2.1...v0.2.2
+
 ## 0.2.1 (2026-11-09)
 
 ## What's Changed
