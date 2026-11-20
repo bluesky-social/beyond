@@ -189,16 +189,28 @@ func setForwardedHeaders(pr *httputil.ProxyRequest) {
 	}
 }
 
-// ProxyPool caches reverse proxy instances by upstream URL.
+// ProxyPool caches reverse proxy instances by upstream URL and upstream trust.
 type ProxyPool struct {
 	mu      sync.RWMutex
-	proxies map[string]*BeyondProxy
+	proxies map[proxyKey]*BeyondProxy
+}
+
+// proxyKey is everything a BeyondProxy is built from, so a cached proxy can
+// only be returned to an application it would have been built identically for.
+//
+// roots is compared by pointer. LoadConfig gives each application that sets
+// upstream_ca_file its own pool, so such an application never shares a proxy,
+// or the transport and connections inside it, with any other. Applications
+// that do not set it all have nil roots and share one proxy per upstream URL.
+type proxyKey struct {
+	upstream string
+	roots    *x509.CertPool
 }
 
 // NewProxyPool returns an empty ProxyPool.
 func NewProxyPool() *ProxyPool {
 	return &ProxyPool{
-		proxies: make(map[string]*BeyondProxy),
+		proxies: make(map[proxyKey]*BeyondProxy),
 	}
 }
 
@@ -206,7 +218,7 @@ func NewProxyPool() *ProxyPool {
 // upstream entries are eventually evicted.
 func (pp *ProxyPool) Reset() {
 	pp.mu.Lock()
-	pp.proxies = make(map[string]*BeyondProxy)
+	pp.proxies = make(map[proxyKey]*BeyondProxy)
 	pp.mu.Unlock()
 }
 
@@ -214,9 +226,10 @@ func (pp *ProxyPool) Reset() {
 // call. It uses double-checked locking: a read lock is tried first; a write
 // lock is acquired only on a cache miss.
 func (pp *ProxyPool) Get(app *Application) (*BeyondProxy, error) {
-	upstream := app.Upstream
+	key := proxyKey{upstream: app.Upstream, roots: app.upstreamRoots}
+
 	pp.mu.RLock()
-	bp, ok := pp.proxies[upstream]
+	bp, ok := pp.proxies[key]
 	pp.mu.RUnlock()
 	if ok {
 		return bp, nil
@@ -226,14 +239,14 @@ func (pp *ProxyPool) Get(app *Application) (*BeyondProxy, error) {
 	defer pp.mu.Unlock()
 
 	// Re-check after acquiring the write lock (double-checked locking).
-	if bp, ok = pp.proxies[upstream]; ok {
+	if bp, ok = pp.proxies[key]; ok {
 		return bp, nil
 	}
 
-	bp, err := newBeyondProxy(upstream, app.upstreamRoots)
+	bp, err := newBeyondProxy(key.upstream, key.roots)
 	if err != nil {
 		return nil, err
 	}
-	pp.proxies[upstream] = bp
+	pp.proxies[key] = bp
 	return bp, nil
 }

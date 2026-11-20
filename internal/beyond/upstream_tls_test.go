@@ -293,3 +293,45 @@ func TestUpstreamCA_ProxiesToUpstreamSignedByConfiguredCA(t *testing.T) {
 	assert.Equal(t, "backend ok", string(body))
 	assert.Equal(t, 1, backend.requestCount())
 }
+
+// Applications that share an upstream URL must not share a proxy unless they
+// share its trust: whichever is served first would otherwise decide how the
+// upstream is verified for the others.
+func TestUpstreamCA_PoolDoesNotShareTrustAcrossApplications(t *testing.T) {
+	t.Parallel()
+	ca := newTestCA(t, "test CA")
+	otherCA := newTestCA(t, "other CA")
+
+	const (
+		pinned      = "pinned"       // trusts the CA that signed the backend
+		plain       = "plain"        // no upstream_ca_file: system roots
+		pinnedOther = "pinned-other" // trusts a CA that did not sign the backend
+	)
+	want := map[string]int{
+		pinned:      http.StatusOK,
+		plain:       http.StatusBadGateway,
+		pinnedOther: http.StatusBadGateway,
+	}
+
+	orders := [][]string{
+		{pinned, plain, pinnedOther, pinned},
+		{plain, pinned, pinnedOther, plain},
+		{pinnedOther, pinned, plain, pinnedOther},
+	}
+	for _, order := range orders {
+		t.Run(strings.Join(order, ","), func(t *testing.T) {
+			t.Parallel()
+			backend := newTLSBackend(t, ca.serverCert(t, backendAddr))
+			h, sm := newUpstreamTLSHandler(t,
+				upstreamTLSApp{name: pinned, upstream: backend.srv.URL, caFile: writeCAFile(t, ca.pem())},
+				upstreamTLSApp{name: plain, upstream: backend.srv.URL},
+				upstreamTLSApp{name: pinnedOther, upstream: backend.srv.URL, caFile: writeCAFile(t, otherCA.pem())},
+			)
+
+			for i, name := range order {
+				resp := getApp(t, h, sm, name)
+				assert.Equal(t, want[name], resp.StatusCode, "request %d, application %s", i+1, name)
+			}
+		})
+	}
+}
