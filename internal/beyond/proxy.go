@@ -226,6 +226,12 @@ func (pp *ProxyPool) Reset() {
 // call. It uses double-checked locking: a read lock is tried first; a write
 // lock is acquired only on a cache miss.
 func (pp *ProxyPool) Get(app *Application) (*BeyondProxy, error) {
+	// Fail closed: without this an application whose bundle was never loaded
+	// would be proxied with the system roots, which is wider trust than its
+	// configuration asks for.
+	if app.UpstreamCAFile != "" && app.upstreamRoots == nil {
+		return nil, fmt.Errorf("beyond: application %q: upstream_ca_file %q was not loaded (config must come from LoadConfig)", app.Name, app.UpstreamCAFile)
+	}
 	key := proxyKey{upstream: app.Upstream, roots: app.upstreamRoots}
 
 	pp.mu.RLock()

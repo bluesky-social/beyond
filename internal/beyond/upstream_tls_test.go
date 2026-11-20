@@ -335,3 +335,21 @@ func TestUpstreamCA_PoolDoesNotShareTrustAcrossApplications(t *testing.T) {
 		})
 	}
 }
+
+// An Application built by hand, not by LoadConfig, has upstream_ca_file set
+// and nothing loaded from it. Proxying it with the system roots would trust
+// more than its configuration says.
+func TestProxyPool_RefusesApplicationWhoseCAFileWasNotLoaded(t *testing.T) {
+	t.Parallel()
+	app := &Application{
+		Name:           "pinned",
+		Upstream:       "https://upstream.internal",
+		UpstreamCAFile: "/etc/beyond/upstream-ca/ca.crt",
+	}
+
+	_, err := NewProxyPool().Get(app)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `application "pinned"`)
+	assert.Contains(t, err.Error(), "upstream_ca_file")
+}
