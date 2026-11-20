@@ -36,8 +36,14 @@ type SessionConfig struct {
 
 // Application represents a proxied HTTP application.
 type Application struct {
-	Name           string   `yaml:"-"` // populated from map key after parse
-	Upstream       string   `yaml:"upstream"`
+	Name     string `yaml:"-"` // populated from map key after parse
+	Upstream string `yaml:"upstream"`
+	// UpstreamCAFile is the path of a PEM bundle of CA certificates. When set,
+	// the upstream's certificate is verified against that bundle only, not the
+	// system roots, so one application's private CA is never trusted for
+	// another application's upstream. The name verified is still the host in
+	// Upstream. Requires an https Upstream.
+	UpstreamCAFile string   `yaml:"upstream_ca_file"`
 	Host           string   `yaml:"host"`
 	DisplayName    string   `yaml:"display_name"`
 	Description    string   `yaml:"description"`
@@ -398,6 +404,9 @@ func (cfg *Config) validate() error {
 				return fmt.Errorf("application %q: upstream must have scheme and host (got %q)", name, app.Upstream)
 			}
 		}
+		if err := validateUpstreamCAFile(name, app); err != nil {
+			return err
+		}
 		if app.Host == "" {
 			return fmt.Errorf("application %q: host is required", name)
 		}
@@ -446,6 +455,19 @@ func (cfg *Config) validate() error {
 		seenHosts[app.Host] = name
 	}
 
+	return nil
+}
+
+// validateUpstreamCAFile rejects upstream_ca_file on anything but an https
+// upstream. On a plain-http upstream the setting would verify nothing while
+// reading as if the hop were protected.
+func validateUpstreamCAFile(appName string, app *Application) error {
+	if app.UpstreamCAFile == "" {
+		return nil
+	}
+	if u, err := url.Parse(app.Upstream); err != nil || u.Scheme != "https" {
+		return fmt.Errorf("application %q: upstream_ca_file requires an https upstream (got %q)", appName, app.Upstream)
+	}
 	return nil
 }
 
