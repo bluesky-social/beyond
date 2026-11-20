@@ -128,6 +128,15 @@ func (b *tlsBackend) requestCount() int {
 	return b.requests
 }
 
+// lastRequest returns the most recent request to reach the handler.
+func (b *tlsBackend) lastRequest(t *testing.T) *http.Request {
+	t.Helper()
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	require.NotNil(t, b.last, "no request reached the backend")
+	return b.last
+}
+
 // upstreamTLSApp is one application of a test config. Its host is
 // <name>.example.com.
 type upstreamTLSApp struct {
@@ -365,4 +374,219 @@ func TestNewBeyondProxy_RefusesRootsForNonHTTPSUpstream(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "https")
+}
+
+func TestUpstreamCA_RejectsUpstreamSignedByAnotherCA(t *testing.T) {
+	t.Parallel()
+	ca := newTestCA(t, "test CA")
+	otherCA := newTestCA(t, "other CA")
+	backend := newTLSBackend(t, otherCA.serverCert(t, backendAddr))
+	h, sm := newUpstreamTLSHandler(t, upstreamTLSApp{
+		name:     "pinned",
+		upstream: backend.srv.URL,
+		caFile:   writeCAFile(t, ca.pem()),
+	})
+
+	resp := getApp(t, h, sm, "pinned")
+
+	assert.Equal(t, http.StatusBadGateway, resp.StatusCode)
+	assert.Zero(t, backend.requestCount(), "the request, with its identity headers, must not be sent to an unverified upstream")
+}
+
+func TestUpstreamCA_RejectsUpstreamCertificateForAnotherName(t *testing.T) {
+	t.Parallel()
+	ca := newTestCA(t, "test CA")
+	// Signed by the trusted CA, but not for the address in the upstream URL.
+	backend := newTLSBackend(t, ca.serverCert(t, "elsewhere.internal.example"))
+	h, sm := newUpstreamTLSHandler(t, upstreamTLSApp{
+		name:     "pinned",
+		upstream: backend.srv.URL,
+		caFile:   writeCAFile(t, ca.pem()),
+	})
+
+	resp := getApp(t, h, sm, "pinned")
+
+	assert.Equal(t, http.StatusBadGateway, resp.StatusCode)
+	assert.Zero(t, backend.requestCount())
+}
+
+// preserve_host changes the Host header sent to the upstream. It must not
+// change the name the upstream's certificate is verified for, which stays the
+// host of the upstream URL.
+func TestUpstreamCA_PreserveHostDoesNotChangeTheVerifiedName(t *testing.T) {
+	t.Parallel()
+	ca := newTestCA(t, "test CA")
+
+	t.Run("certificate for the upstream URL host is accepted", func(t *testing.T) {
+		t.Parallel()
+		backend := newTLSBackend(t, ca.serverCert(t, backendAddr))
+		h, sm := newUpstreamTLSHandler(t, upstreamTLSApp{
+			name:         "pinned",
+			upstream:     backend.srv.URL,
+			caFile:       writeCAFile(t, ca.pem()),
+			preserveHost: true,
+		})
+
+		resp := getApp(t, h, sm, "pinned")
+
+		require.Equal(t, http.StatusOK, resp.StatusCode)
+		assert.Equal(t, "pinned.example.com", backend.lastRequest(t).Host)
+	})
+
+	t.Run("certificate for the preserved host is rejected", func(t *testing.T) {
+		t.Parallel()
+		backend := newTLSBackend(t, ca.serverCert(t, "pinned.example.com"))
+		h, sm := newUpstreamTLSHandler(t, upstreamTLSApp{
+			name:         "pinned",
+			upstream:     backend.srv.URL,
+			caFile:       writeCAFile(t, ca.pem()),
+			preserveHost: true,
+		})
+
+		resp := getApp(t, h, sm, "pinned")
+
+		assert.Equal(t, http.StatusBadGateway, resp.StatusCode)
+		assert.Zero(t, backend.requestCount())
+	})
+}
+
+// Without upstream_ca_file an https upstream is verified against the system
+// roots, as it was before the setting existed: a private CA is not trusted
+// just because some application names it.
+func TestUpstreamCA_ApplicationWithoutItCannotReachPrivateCAUpstream(t *testing.T) {
+	t.Parallel()
+	ca := newTestCA(t, "test CA")
+	backend := newTLSBackend(t, ca.serverCert(t, backendAddr))
+	h, sm := newUpstreamTLSHandler(t, upstreamTLSApp{name: "plain", upstream: backend.srv.URL})
+
+	resp := getApp(t, h, sm, "plain")
+
+	assert.Equal(t, http.StatusBadGateway, resp.StatusCode)
+	assert.Zero(t, backend.requestCount())
+}
+
+// A bundle may hold several CAs, which is how a CA is replaced without an
+// outage: trust old and new, move the upstream, drop the old.
+func TestUpstreamCA_BundleMayHoldSeveralCAs(t *testing.T) {
+	t.Parallel()
+	oldCA := newTestCA(t, "old CA")
+	newCA := newTestCA(t, "new CA")
+	caFile := writeCAFile(t, append(oldCA.pem(), newCA.pem()...))
+	oldBackend := newTLSBackend(t, oldCA.serverCert(t, backendAddr))
+	newBackend := newTLSBackend(t, newCA.serverCert(t, backendAddr))
+	h, sm := newUpstreamTLSHandler(t,
+		upstreamTLSApp{name: "on-old", upstream: oldBackend.srv.URL, caFile: caFile},
+		upstreamTLSApp{name: "on-new", upstream: newBackend.srv.URL, caFile: caFile},
+	)
+
+	assert.Equal(t, http.StatusOK, getApp(t, h, sm, "on-old").StatusCode)
+	assert.Equal(t, http.StatusOK, getApp(t, h, sm, "on-new").StatusCode)
+}
+
+// The bundle is read once, by LoadConfig. A file that changes afterwards (a
+// mounted ConfigMap is updated in place) changes nothing until the process
+// restarts and loads its config again.
+func TestUpstreamCA_BundleIsReadOnceWhenConfigLoads(t *testing.T) {
+	t.Parallel()
+	loadedCA := newTestCA(t, "CA in the file at load")
+	laterCA := newTestCA(t, "CA written to the file afterwards")
+	caFile := writeCAFile(t, loadedCA.pem())
+	loadedBackend := newTLSBackend(t, loadedCA.serverCert(t, backendAddr))
+	laterBackend := newTLSBackend(t, laterCA.serverCert(t, backendAddr))
+	h, sm := newUpstreamTLSHandler(t,
+		upstreamTLSApp{name: "on-loaded", upstream: loadedBackend.srv.URL, caFile: caFile},
+		upstreamTLSApp{name: "on-later", upstream: laterBackend.srv.URL, caFile: caFile},
+	)
+
+	require.NoError(t, os.WriteFile(caFile, laterCA.pem(), 0o600))
+
+	assert.Equal(t, http.StatusOK, getApp(t, h, sm, "on-loaded").StatusCode)
+	assert.Equal(t, http.StatusBadGateway, getApp(t, h, sm, "on-later").StatusCode)
+	assert.Zero(t, laterBackend.requestCount())
+}
+
+// An https upstream reached through http.DefaultTransport negotiates HTTP/2.
+// One reached through the upstream_ca_file transport must too.
+func TestUpstreamCA_UpstreamStillNegotiatesHTTP2(t *testing.T) {
+	t.Parallel()
+	ca := newTestCA(t, "test CA")
+	backend := newTLSBackend(t, ca.serverCert(t, backendAddr))
+	h, sm := newUpstreamTLSHandler(t, upstreamTLSApp{
+		name:     "pinned",
+		upstream: backend.srv.URL,
+		caFile:   writeCAFile(t, ca.pem()),
+	})
+
+	resp := getApp(t, h, sm, "pinned")
+
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Equal(t, 2, backend.lastRequest(t).ProtoMajor)
+}
+
+func TestLoadConfig_UpstreamCAFileLoadsExactlyTheBundle(t *testing.T) {
+	t.Parallel()
+	ca := newTestCA(t, "test CA")
+	otherCA := newTestCA(t, "other CA")
+	caFile := writeCAFile(t, append(ca.pem(), otherCA.pem()...))
+
+	cfg, err := LoadConfig(writeTempFile(t, upstreamCAConfig("https://upstream.internal", caFile)))
+	require.NoError(t, err)
+
+	want := x509.NewCertPool()
+	want.AddCert(ca.cert)
+	want.AddCert(otherCA.cert)
+	got := cfg.Applications["pinned"].upstreamRoots
+	require.NotNil(t, got)
+	assert.True(t, got.Equal(want), "the loaded roots must be the bundle's certificates and nothing else, system roots included")
+}
+
+// The 52 applications without upstream_ca_file must proxy exactly as before:
+// a ReverseProxy with no Transport, which is http.DefaultTransport.
+func TestProxyPool_ApplicationWithoutCAFileHasNoTransportOfItsOwn(t *testing.T) {
+	t.Parallel()
+	pool := NewProxyPool()
+
+	for _, upstream := range []string{"http://upstream.internal:8080", "https://upstream.internal"} {
+		bp, err := pool.Get(&Application{Name: "plain", Upstream: upstream})
+		require.NoError(t, err)
+		assert.Nil(t, bp.rp.Transport, upstream)
+	}
+}
+
+// The upstream_ca_file transport must be http.DefaultTransport with different
+// roots and nothing else: same pooling, timeouts, proxy and HTTP/2 behaviour.
+func TestNewUpstreamCATransport_DiffersFromDefaultOnlyInRoots(t *testing.T) {
+	t.Parallel()
+	roots := x509.NewCertPool()
+	roots.AddCert(newTestCA(t, "test CA").cert)
+	base, ok := http.DefaultTransport.(*http.Transport)
+	require.True(t, ok)
+
+	tr, err := newUpstreamCATransport(roots)
+	require.NoError(t, err)
+
+	require.NotNil(t, tr.TLSClientConfig)
+	assert.Same(t, roots, tr.TLSClientConfig.RootCAs)
+	assert.False(t, tr.TLSClientConfig.InsecureSkipVerify)
+	assert.Empty(t, tr.TLSClientConfig.ServerName, "the verified name must come from the upstream URL")
+	assert.Nil(t, tr.TLSClientConfig.VerifyPeerCertificate)
+	assert.Nil(t, tr.TLSClientConfig.VerifyConnection)
+
+	assert.Equal(t, base.ForceAttemptHTTP2, tr.ForceAttemptHTTP2)
+	assert.Equal(t, base.MaxIdleConns, tr.MaxIdleConns)
+	assert.Equal(t, base.MaxIdleConnsPerHost, tr.MaxIdleConnsPerHost)
+	assert.Equal(t, base.MaxConnsPerHost, tr.MaxConnsPerHost)
+	assert.Equal(t, base.IdleConnTimeout, tr.IdleConnTimeout)
+	assert.Equal(t, base.TLSHandshakeTimeout, tr.TLSHandshakeTimeout)
+	assert.Equal(t, base.ExpectContinueTimeout, tr.ExpectContinueTimeout)
+	assert.Equal(t, base.ResponseHeaderTimeout, tr.ResponseHeaderTimeout)
+	assert.Equal(t, base.DisableKeepAlives, tr.DisableKeepAlives)
+	assert.Equal(t, base.DisableCompression, tr.DisableCompression)
+	assert.Equal(t, base.Proxy == nil, tr.Proxy == nil)
+
+	// The clone must not have handed its roots back to the transport every
+	// other application uses.
+	if base.TLSClientConfig != nil {
+		assert.Nil(t, base.TLSClientConfig.RootCAs)
+	}
 }
