@@ -1,6 +1,7 @@
 package beyond
 
 import (
+	"crypto/x509"
 	"fmt"
 	"net/url"
 	"os"
@@ -43,7 +44,10 @@ type Application struct {
 	// system roots, so one application's private CA is never trusted for
 	// another application's upstream. The name verified is still the host in
 	// Upstream. Requires an https Upstream.
-	UpstreamCAFile string   `yaml:"upstream_ca_file"`
+	UpstreamCAFile string `yaml:"upstream_ca_file"`
+	// upstreamRoots is UpstreamCAFile parsed, set by populate(). The file is
+	// read once, when the config is loaded.
+	upstreamRoots  *x509.CertPool
 	Host           string   `yaml:"host"`
 	DisplayName    string   `yaml:"display_name"`
 	Description    string   `yaml:"description"`
@@ -305,6 +309,14 @@ func (cfg *Config) populate() error {
 		}
 		if app.LaunchURL == "" && app.Host != "" {
 			app.LaunchURL = (&url.URL{Scheme: "https", Host: app.Host, Path: "/"}).String()
+		}
+
+		if app.UpstreamCAFile != "" {
+			roots, err := loadUpstreamCAFile(app.UpstreamCAFile)
+			if err != nil {
+				return fmt.Errorf("application %q: upstream_ca_file: %w", name, err)
+			}
+			app.upstreamRoots = roots
 		}
 
 		// Parse the mint token_lifetime here (not at validate time) so the

@@ -81,3 +81,15 @@ func TestLoadConfig_UpstreamCAFileRequiresHTTPSUpstream(t *testing.T) {
 	assert.Contains(t, err.Error(), `application "pinned"`)
 	assert.Contains(t, err.Error(), "upstream_ca_file requires an https upstream")
 }
+
+func TestLoadConfig_UpstreamCAFileMissing(t *testing.T) {
+	t.Parallel()
+	missing := filepath.Join(t.TempDir(), "absent.crt")
+
+	_, err := LoadConfig(writeTempFile(t, upstreamCAConfig("https://upstream.internal", missing)))
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `application "pinned": upstream_ca_file`)
+	assert.Contains(t, err.Error(), missing)
+	assert.ErrorIs(t, err, os.ErrNotExist)
+}
