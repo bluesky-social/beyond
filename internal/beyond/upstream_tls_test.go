@@ -549,8 +549,9 @@ func TestLoadConfig_UpstreamCAFileLoadsExactlyTheBundle(t *testing.T) {
 	assert.True(t, got.Equal(want), "the loaded roots must be the bundle's certificates and nothing else, system roots included")
 }
 
-// The 52 applications without upstream_ca_file must proxy exactly as before:
-// a ReverseProxy with no Transport, which is http.DefaultTransport.
+// An application without upstream_ca_file must proxy exactly as it did before
+// the setting existed: a ReverseProxy with no Transport, which is
+// http.DefaultTransport.
 func TestProxyPool_ApplicationWithoutCAFileHasNoTransportOfItsOwn(t *testing.T) {
 	t.Parallel()
 	pool := NewProxyPool()
