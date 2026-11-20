@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.3.0 (2026-11-20)
+
+## What's Changed
+* ci: exclude docs and .github from releases by @sarahmaeve in https://github.com/bluesky-social/beyond/pull/53
+* fix(deps): update go dependencies by @renovate[bot] in https://github.com/bluesky-social/beyond/pull/55
+* fix(deps): update go module directive to v1.27.4 by @renovate[bot] in https://github.com/bluesky-social/beyond/pull/57
+* fix(deps): update go dependencies by @renovate[bot] in https://github.com/bluesky-social/beyond/pull/56
+* fix(deps): update golang docker tag to v1.27.4 by @renovate[bot] in https://github.com/bluesky-social/beyond/pull/58
+* chore(deps): update dependency go to v1.27.4 by @renovate[bot] in https://github.com/bluesky-social/beyond/pull/59
+* fix(deps): update redis:7-alpine docker digest to 7f7d30b by @renovate[bot] in https://github.com/bluesky-social/beyond/pull/60
+* fix(deps): update module github.com/prometheus/common to v0.74.0 by @renovate[bot] in https://github.com/bluesky-social/beyond/pull/61
+* fix(deps): update postgres:17-alpine docker digest to a77aa70 by @renovate[bot] in https://github.com/bluesky-social/beyond/pull/62
+* feat: verify an https upstream against a per-application CA bundle (upstream_ca_file) by @sarahmaeve in https://github.com/bluesky-social/beyond/pull/63
+
+
+**Full Changelog**: https://github.com/bluesky-social/beyond/compare/v0.2.1...v0.3.0
+
 ## 0.2.1 (2026-11-09)
 
 ## What's Changed
