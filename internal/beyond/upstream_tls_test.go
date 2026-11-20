@@ -353,3 +353,16 @@ func TestProxyPool_RefusesApplicationWhoseCAFileWasNotLoaded(t *testing.T) {
 	assert.Contains(t, err.Error(), `application "pinned"`)
 	assert.Contains(t, err.Error(), "upstream_ca_file")
 }
+
+// Roots for a plain-http upstream would verify nothing. LoadConfig rejects
+// that configuration; the proxy must not build it either.
+func TestNewBeyondProxy_RefusesRootsForNonHTTPSUpstream(t *testing.T) {
+	t.Parallel()
+	roots := x509.NewCertPool()
+	roots.AddCert(newTestCA(t, "test CA").cert)
+
+	_, err := newBeyondProxy("http://upstream.internal:8080", roots)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "https")
+}

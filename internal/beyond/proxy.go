@@ -43,6 +43,12 @@ func newBeyondProxy(upstream string, upstreamRoots *x509.CertPool) (*BeyondProxy
 
 	var transport http.RoundTripper
 	if upstreamRoots != nil {
+		// Roots only mean something over TLS. Building this proxy anyway would
+		// send identity headers in the clear to an upstream its configuration
+		// claims is verified.
+		if u.Scheme != "https" {
+			return nil, fmt.Errorf("beyond: upstream %q has CA roots but is not https", upstream)
+		}
 		transport, err = newUpstreamCATransport(upstreamRoots)
 		if err != nil {
 			return nil, err
