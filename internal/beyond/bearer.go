@@ -202,7 +202,7 @@ func (h *Handler) handleBearer(w http.ResponseWriter, r *http.Request, app *Appl
 		return
 	}
 
-	proxy, err := h.proxies.Get(app.Upstream)
+	proxy, err := h.proxies.Get(app)
 	if err != nil {
 		logHTTP("allow", http.StatusBadGateway)
 		respond("bad gateway", http.StatusBadGateway)

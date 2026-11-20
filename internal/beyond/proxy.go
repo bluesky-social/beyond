@@ -2,6 +2,7 @@ package beyond
 
 import (
 	"context"
+	"crypto/x509"
 	"fmt"
 	"net"
 	"net/http"
@@ -30,13 +31,32 @@ type BeyondProxy struct {
 }
 
 // newBeyondProxy creates a BeyondProxy that forwards requests to upstream.
-func newBeyondProxy(upstream string) (*BeyondProxy, error) {
+//
+// With nil upstreamRoots the proxy has no Transport of its own, so it uses
+// http.DefaultTransport and, for an https upstream, the system roots. With
+// upstreamRoots it verifies the upstream against those roots only.
+func newBeyondProxy(upstream string, upstreamRoots *x509.CertPool) (*BeyondProxy, error) {
 	u, err := url.Parse(upstream)
 	if err != nil {
 		return nil, fmt.Errorf("beyond: parse upstream URL %q: %w", upstream, err)
 	}
 
+	var transport http.RoundTripper
+	if upstreamRoots != nil {
+		// Roots only mean something over TLS. Building this proxy anyway would
+		// send identity headers in the clear to an upstream its configuration
+		// claims is verified.
+		if u.Scheme != "https" {
+			return nil, fmt.Errorf("beyond: upstream %q has CA roots but is not https", upstream)
+		}
+		transport, err = newUpstreamCATransport(upstreamRoots)
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	rp := &httputil.ReverseProxy{
+		Transport: transport,
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.SetURL(u)
 			pr.Out.Host = u.Host
@@ -147,7 +167,7 @@ func scrubBeyondCookies(out *http.Request) {
 //
 //   - X-Forwarded-Proto is always "https": beyond's external edge is HTTPS
 //     (it either terminates TLS or sits behind a TLS-terminating LB with HSTS),
-//     even though the hop to the upstream is plain http. Grafana and similar
+//     even when the hop to the upstream is plain http. Grafana and similar
 //     apps infer cookie Secure flags and redirect schemes from this.
 //   - X-Forwarded-Host is the host the client requested (pr.In.Host), not the
 //     rewritten upstream host, so upstream-built URLs point at the public name.
@@ -175,16 +195,28 @@ func setForwardedHeaders(pr *httputil.ProxyRequest) {
 	}
 }
 
-// ProxyPool caches reverse proxy instances by upstream URL.
+// ProxyPool caches reverse proxy instances by upstream URL and upstream trust.
 type ProxyPool struct {
 	mu      sync.RWMutex
-	proxies map[string]*BeyondProxy
+	proxies map[proxyKey]*BeyondProxy
+}
+
+// proxyKey is everything a BeyondProxy is built from, so a cached proxy can
+// only be returned to an application it would have been built identically for.
+//
+// roots is compared by pointer. LoadConfig gives each application that sets
+// upstream_ca_file its own pool, so such an application never shares a proxy,
+// or the transport and connections inside it, with any other. Applications
+// that do not set it all have nil roots and share one proxy per upstream URL.
+type proxyKey struct {
+	upstream string
+	roots    *x509.CertPool
 }
 
 // NewProxyPool returns an empty ProxyPool.
 func NewProxyPool() *ProxyPool {
 	return &ProxyPool{
-		proxies: make(map[string]*BeyondProxy),
+		proxies: make(map[proxyKey]*BeyondProxy),
 	}
 }
 
@@ -192,16 +224,24 @@ func NewProxyPool() *ProxyPool {
 // upstream entries are eventually evicted.
 func (pp *ProxyPool) Reset() {
 	pp.mu.Lock()
-	pp.proxies = make(map[string]*BeyondProxy)
+	pp.proxies = make(map[proxyKey]*BeyondProxy)
 	pp.mu.Unlock()
 }
 
-// Get returns a cached BeyondProxy for upstream, creating one on first call.
-// It uses double-checked locking: a read lock is tried first; a write lock is
-// acquired only on a cache miss.
-func (pp *ProxyPool) Get(upstream string) (*BeyondProxy, error) {
+// Get returns a cached BeyondProxy for app's upstream, creating one on first
+// call. It uses double-checked locking: a read lock is tried first; a write
+// lock is acquired only on a cache miss.
+func (pp *ProxyPool) Get(app *Application) (*BeyondProxy, error) {
+	// Fail closed: without this an application whose bundle was never loaded
+	// would be proxied with the system roots, which is wider trust than its
+	// configuration asks for.
+	if app.UpstreamCAFile != "" && app.upstreamRoots == nil {
+		return nil, fmt.Errorf("beyond: application %q: upstream_ca_file %q was not loaded (config must come from LoadConfig)", app.Name, app.UpstreamCAFile)
+	}
+	key := proxyKey{upstream: app.Upstream, roots: app.upstreamRoots}
+
 	pp.mu.RLock()
-	bp, ok := pp.proxies[upstream]
+	bp, ok := pp.proxies[key]
 	pp.mu.RUnlock()
 	if ok {
 		return bp, nil
@@ -211,14 +251,14 @@ func (pp *ProxyPool) Get(upstream string) (*BeyondProxy, error) {
 	defer pp.mu.Unlock()
 
 	// Re-check after acquiring the write lock (double-checked locking).
-	if bp, ok = pp.proxies[upstream]; ok {
+	if bp, ok = pp.proxies[key]; ok {
 		return bp, nil
 	}
 
-	bp, err := newBeyondProxy(upstream)
+	bp, err := newBeyondProxy(key.upstream, key.roots)
 	if err != nil {
 		return nil, err
 	}
-	pp.proxies[upstream] = bp
+	pp.proxies[key] = bp
 	return bp, nil
 }

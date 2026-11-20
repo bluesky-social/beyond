@@ -477,7 +477,7 @@ func (h *Handler) handleProxy(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Proxy the request.
-	proxy, err := h.proxies.Get(app.Upstream)
+	proxy, err := h.proxies.Get(app)
 	if err != nil {
 		logHTTP("allow", http.StatusBadGateway)
 		beyondResponse(w, "bad gateway", http.StatusBadGateway)

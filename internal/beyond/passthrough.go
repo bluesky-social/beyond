@@ -103,7 +103,7 @@ func (h *Handler) handleUntrustedPassthrough(w http.ResponseWriter, r *http.Requ
 		}
 	}
 
-	proxy, err := h.proxies.Get(app.Upstream)
+	proxy, err := h.proxies.Get(app)
 	if err != nil {
 		logHTTP("allow", http.StatusBadGateway)
 		beyondResponse(w, "bad gateway", http.StatusBadGateway)

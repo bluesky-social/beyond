@@ -1,6 +1,7 @@
 package beyond
 
 import (
+	"crypto/x509"
 	"fmt"
 	"net/url"
 	"os"
@@ -36,8 +37,23 @@ type SessionConfig struct {
 
 // Application represents a proxied HTTP application.
 type Application struct {
-	Name           string   `yaml:"-"` // populated from map key after parse
-	Upstream       string   `yaml:"upstream"`
+	Name     string `yaml:"-"` // populated from map key after parse
+	Upstream string `yaml:"upstream"`
+	// UpstreamCAFile is the path of a PEM bundle of CA certificates. When set,
+	// the upstream's certificate is verified against that bundle only, not the
+	// system roots, so one application's private CA is never trusted for
+	// another application's upstream. The name verified is still the host in
+	// Upstream. Requires an https Upstream.
+	//
+	// The file is read once, when the config is loaded, and the config is
+	// loaded once, at startup. A change to the file on disk takes effect at
+	// the next restart. Re-reading it in a running process was left out
+	// deliberately: it would be the only part of the config that reloads, and
+	// a half-written or wrong file would take the application down at some
+	// later moment instead of failing a rollout.
+	UpstreamCAFile string `yaml:"upstream_ca_file"`
+	// upstreamRoots is UpstreamCAFile parsed, set by populate().
+	upstreamRoots  *x509.CertPool
 	Host           string   `yaml:"host"`
 	DisplayName    string   `yaml:"display_name"`
 	Description    string   `yaml:"description"`
@@ -301,6 +317,14 @@ func (cfg *Config) populate() error {
 			app.LaunchURL = (&url.URL{Scheme: "https", Host: app.Host, Path: "/"}).String()
 		}
 
+		if app.UpstreamCAFile != "" {
+			roots, err := loadUpstreamCAFile(app.UpstreamCAFile)
+			if err != nil {
+				return fmt.Errorf("application %q: upstream_ca_file: %w", name, err)
+			}
+			app.upstreamRoots = roots
+		}
+
 		// Parse the mint token_lifetime here (not at validate time) so the
 		// derived Duration is available to the handler. A malformed value is a
 		// hard config error surfaced at boot.
@@ -398,6 +422,9 @@ func (cfg *Config) validate() error {
 				return fmt.Errorf("application %q: upstream must have scheme and host (got %q)", name, app.Upstream)
 			}
 		}
+		if err := validateUpstreamCAFile(name, app); err != nil {
+			return err
+		}
 		if app.Host == "" {
 			return fmt.Errorf("application %q: host is required", name)
 		}
@@ -446,6 +473,19 @@ func (cfg *Config) validate() error {
 		seenHosts[app.Host] = name
 	}
 
+	return nil
+}
+
+// validateUpstreamCAFile rejects upstream_ca_file on anything but an https
+// upstream. On a plain-http upstream the setting would verify nothing while
+// reading as if the hop were protected.
+func validateUpstreamCAFile(appName string, app *Application) error {
+	if app.UpstreamCAFile == "" {
+		return nil
+	}
+	if u, err := url.Parse(app.Upstream); err != nil || u.Scheme != "https" {
+		return fmt.Errorf("application %q: upstream_ca_file requires an https upstream (got %q)", appName, app.Upstream)
+	}
 	return nil
 }
 
