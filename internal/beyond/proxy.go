@@ -167,7 +167,7 @@ func scrubBeyondCookies(out *http.Request) {
 //
 //   - X-Forwarded-Proto is always "https": beyond's external edge is HTTPS
 //     (it either terminates TLS or sits behind a TLS-terminating LB with HSTS),
-//     even though the hop to the upstream is plain http. Grafana and similar
+//     even when the hop to the upstream is plain http. Grafana and similar
 //     apps infer cookie Secure flags and redirect schemes from this.
 //   - X-Forwarded-Host is the host the client requested (pr.In.Host), not the
 //     rewritten upstream host, so upstream-built URLs point at the public name.

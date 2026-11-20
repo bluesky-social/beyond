@@ -158,6 +158,39 @@ upstream HTTP `Host` header while still dialing `upstream`. This is useful when
 the upstream derives OAuth metadata or absolute URLs from `Host`; Beyond still
 sets authoritative `X-Forwarded-Host` and `X-Forwarded-Proto` headers as usual.
 
+## Upstream TLS and private CAs
+
+An `https://` upstream is verified against the system roots in beyond's image,
+by the host in its `upstream` URL. For an upstream whose certificate is signed
+by a private CA, give that application the CA:
+
+```yaml
+applications:
+  dashboards:
+    upstream: https://gateway.internal.svc.cluster.local
+    upstream_ca_file: /etc/beyond/upstream-ca/ca.crt
+    host: dashboards.example.com
+    allowed_groups: [engineering]
+```
+
+`upstream_ca_file` is the path of a PEM bundle of one or more CA certificates.
+
+- That application's upstream is verified against the bundle **only**. The
+  system roots are not consulted for it, and no other application trusts the
+  bundle, including one with the same `upstream` URL.
+- The name verified is still the host in `upstream`. `preserve_host` changes
+  the `Host` header sent, not the name the certificate must carry.
+- It is checked at startup. beyond refuses to start if the file is missing, if
+  anything in it is not a valid certificate, or if the setting is on an
+  upstream that is not `https://`.
+- The file is read once at startup, like the rest of the config. A file that
+  changes on disk afterwards (a mounted ConfigMap is updated in place) has no
+  effect until beyond restarts. To replace a CA without an outage, restart
+  with a bundle holding both the old and the new CA, move the upstream to the
+  new one, then drop the old.
+
+There is no setting that turns upstream verification off.
+
 ## Identity headers for upstream services
 
 Beyond removes every client-supplied `X-Beyond-*` header before proxying a

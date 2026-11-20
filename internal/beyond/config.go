@@ -44,9 +44,15 @@ type Application struct {
 	// system roots, so one application's private CA is never trusted for
 	// another application's upstream. The name verified is still the host in
 	// Upstream. Requires an https Upstream.
+	//
+	// The file is read once, when the config is loaded, and the config is
+	// loaded once, at startup. A change to the file on disk takes effect at
+	// the next restart. Re-reading it in a running process was left out
+	// deliberately: it would be the only part of the config that reloads, and
+	// a half-written or wrong file would take the application down at some
+	// later moment instead of failing a rollout.
 	UpstreamCAFile string `yaml:"upstream_ca_file"`
-	// upstreamRoots is UpstreamCAFile parsed, set by populate(). The file is
-	// read once, when the config is loaded.
+	// upstreamRoots is UpstreamCAFile parsed, set by populate().
 	upstreamRoots  *x509.CertPool
 	Host           string   `yaml:"host"`
 	DisplayName    string   `yaml:"display_name"`
