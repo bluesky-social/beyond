@@ -2,6 +2,7 @@ package beyond
 
 import (
 	"context"
+	"crypto/x509"
 	"fmt"
 	"net"
 	"net/http"
@@ -30,13 +31,26 @@ type BeyondProxy struct {
 }
 
 // newBeyondProxy creates a BeyondProxy that forwards requests to upstream.
-func newBeyondProxy(upstream string) (*BeyondProxy, error) {
+//
+// With nil upstreamRoots the proxy has no Transport of its own, so it uses
+// http.DefaultTransport and, for an https upstream, the system roots. With
+// upstreamRoots it verifies the upstream against those roots only.
+func newBeyondProxy(upstream string, upstreamRoots *x509.CertPool) (*BeyondProxy, error) {
 	u, err := url.Parse(upstream)
 	if err != nil {
 		return nil, fmt.Errorf("beyond: parse upstream URL %q: %w", upstream, err)
 	}
 
+	var transport http.RoundTripper
+	if upstreamRoots != nil {
+		transport, err = newUpstreamCATransport(upstreamRoots)
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	rp := &httputil.ReverseProxy{
+		Transport: transport,
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.SetURL(u)
 			pr.Out.Host = u.Host
@@ -196,10 +210,11 @@ func (pp *ProxyPool) Reset() {
 	pp.mu.Unlock()
 }
 
-// Get returns a cached BeyondProxy for upstream, creating one on first call.
-// It uses double-checked locking: a read lock is tried first; a write lock is
-// acquired only on a cache miss.
-func (pp *ProxyPool) Get(upstream string) (*BeyondProxy, error) {
+// Get returns a cached BeyondProxy for app's upstream, creating one on first
+// call. It uses double-checked locking: a read lock is tried first; a write
+// lock is acquired only on a cache miss.
+func (pp *ProxyPool) Get(app *Application) (*BeyondProxy, error) {
+	upstream := app.Upstream
 	pp.mu.RLock()
 	bp, ok := pp.proxies[upstream]
 	pp.mu.RUnlock()
@@ -215,7 +230,7 @@ func (pp *ProxyPool) Get(upstream string) (*BeyondProxy, error) {
 		return bp, nil
 	}
 
-	bp, err := newBeyondProxy(upstream)
+	bp, err := newBeyondProxy(upstream, app.upstreamRoots)
 	if err != nil {
 		return nil, err
 	}

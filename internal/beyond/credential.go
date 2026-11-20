@@ -296,7 +296,7 @@ func (h *Handler) handleCredential(w http.ResponseWriter, r *http.Request, app *
 		r.Header.Del("x-api-key")
 	}
 
-	proxy, err := h.proxies.Get(app.Upstream)
+	proxy, err := h.proxies.Get(app)
 	if err != nil {
 		logHTTP("allow", http.StatusBadGateway)
 		beyondResponse(w, "bad gateway", http.StatusBadGateway)

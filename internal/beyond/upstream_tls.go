@@ -2,12 +2,36 @@ package beyond
 
 import (
 	"bytes"
+	"crypto/tls"
 	"crypto/x509"
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 )
+
+// newUpstreamCATransport returns the transport for an application that sets
+// upstream_ca_file: a copy of http.DefaultTransport, which every other
+// application's proxy uses, that verifies the upstream against roots instead
+// of the system roots. Setting RootCAs replaces the system roots; it does not
+// add to them. The name verified is the host of the URL being dialled, which
+// is the application's upstream.
+//
+// Each call returns a new transport, so its connections are never shared with
+// an application that has different roots.
+func newUpstreamCATransport(roots *x509.CertPool) (*http.Transport, error) {
+	base, ok := http.DefaultTransport.(*http.Transport)
+	if !ok {
+		return nil, fmt.Errorf("beyond: http.DefaultTransport is a %T, not an *http.Transport", http.DefaultTransport)
+	}
+	transport := base.Clone()
+	if transport.TLSClientConfig == nil {
+		transport.TLSClientConfig = &tls.Config{}
+	}
+	transport.TLSClientConfig.RootCAs = roots
+	return transport, nil
+}
 
 // loadUpstreamCAFile reads the PEM bundle named by an application's
 // upstream_ca_file into a certificate pool.

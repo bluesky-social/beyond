@@ -29,7 +29,7 @@ func TestReverseProxy_ForwardsRequest(t *testing.T) {
 	}))
 	defer backend.Close()
 
-	bp, err := newBeyondProxy(backend.URL)
+	bp, err := newBeyondProxy(backend.URL, nil)
 	require.NoError(t, err)
 
 	req := httptest.NewRequest(http.MethodGet, "/some/path", nil)
@@ -62,7 +62,7 @@ func TestReverseProxy_StripsIncomingBeyondHeaders(t *testing.T) {
 	}))
 	defer backend.Close()
 
-	bp, err := newBeyondProxy(backend.URL)
+	bp, err := newBeyondProxy(backend.URL, nil)
 	require.NoError(t, err)
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -103,7 +103,7 @@ func TestReverseProxy_InjectsApplicationRoleAfterStrippingSpoofedHeader(t *testi
 	}))
 	defer backend.Close()
 
-	bp, err := newBeyondProxy(backend.URL)
+	bp, err := newBeyondProxy(backend.URL, nil)
 	require.NoError(t, err)
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -138,7 +138,7 @@ func TestReverseProxy_ConnectionHeaderCannotEraseIdentity(t *testing.T) {
 	}))
 	defer backend.Close()
 
-	bp, err := newBeyondProxy(backend.URL)
+	bp, err := newBeyondProxy(backend.URL, nil)
 	require.NoError(t, err)
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -179,7 +179,7 @@ func TestReverseProxy_ConnectionHeaderCannotEraseProjectedRole(t *testing.T) {
 	}))
 	defer backend.Close()
 
-	bp, err := newBeyondProxy(backend.URL)
+	bp, err := newBeyondProxy(backend.URL, nil)
 	require.NoError(t, err)
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -208,7 +208,7 @@ func TestReverseProxy_OverwritesForwardedHeaders(t *testing.T) {
 	}))
 	defer backend.Close()
 
-	bp, err := newBeyondProxy(backend.URL)
+	bp, err := newBeyondProxy(backend.URL, nil)
 	require.NoError(t, err)
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -242,7 +242,7 @@ func TestReverseProxy_ForwardsResolvedClientIP(t *testing.T) {
 	}))
 	defer backend.Close()
 
-	bp, err := newBeyondProxy(backend.URL)
+	bp, err := newBeyondProxy(backend.URL, nil)
 	require.NoError(t, err)
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -265,7 +265,7 @@ func TestReverseProxy_PreserveHostUsesConfiguredApplicationHost(t *testing.T) {
 	}))
 	defer backend.Close()
 
-	bp, err := newBeyondProxy(backend.URL)
+	bp, err := newBeyondProxy(backend.URL, nil)
 	require.NoError(t, err)
 	app := &Application{Host: "mcp.example.com", PreserveHost: true}
 	req := httptest.NewRequest(http.MethodGet, "/.well-known/oauth-protected-resource/mcp", nil)
@@ -289,7 +289,7 @@ func TestReverseProxy_PassthroughPreservesConfiguredApplicationHostWithoutIdenti
 	}))
 	defer backend.Close()
 
-	bp, err := newBeyondProxy(backend.URL)
+	bp, err := newBeyondProxy(backend.URL, nil)
 	require.NoError(t, err)
 	app := &Application{Host: "mcp.example.com", PreserveHost: true}
 	req := httptest.NewRequest(http.MethodGet, "/mcp", nil)
@@ -317,7 +317,7 @@ func TestReverseProxy_ScrubsBeyondSessionCookie(t *testing.T) {
 	}))
 	defer backend.Close()
 
-	bp, err := newBeyondProxy(backend.URL)
+	bp, err := newBeyondProxy(backend.URL, nil)
 	require.NoError(t, err)
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -339,11 +339,11 @@ func TestProxyPool_CachesProxy(t *testing.T) {
 
 	upstream := "http://localhost:9999"
 
-	first, err := pool.Get(upstream)
+	first, err := pool.Get(&Application{Name: "one", Upstream: upstream})
 	require.NoError(t, err)
 	require.NotNil(t, first)
 
-	second, err := pool.Get(upstream)
+	second, err := pool.Get(&Application{Name: "two", Upstream: upstream})
 	require.NoError(t, err)
 	require.NotNil(t, second)
 
@@ -355,13 +355,15 @@ func TestProxyPool_Reset(t *testing.T) {
 	t.Parallel()
 	pool := NewProxyPool()
 
-	first, err := pool.Get("http://localhost:9999")
+	app := &Application{Upstream: "http://localhost:9999"}
+
+	first, err := pool.Get(app)
 	require.NoError(t, err)
 
 	pool.Reset()
 
 	// After reset, a new proxy instance should be created.
-	second, err := pool.Get("http://localhost:9999")
+	second, err := pool.Get(app)
 	require.NoError(t, err)
 	assert.NotSame(t, first, second, "Reset should evict cached proxies")
 }
