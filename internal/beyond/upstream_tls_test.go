@@ -93,3 +93,59 @@ func TestLoadConfig_UpstreamCAFileMissing(t *testing.T) {
 	assert.Contains(t, err.Error(), missing)
 	assert.ErrorIs(t, err, os.ErrNotExist)
 }
+
+// A bundle that does not parse completely must not load at all: trusting the
+// certificates that happened to parse would leave an application working
+// until its upstream moved to the CA that was dropped.
+func TestLoadConfig_UpstreamCAFileUnparseable(t *testing.T) {
+	t.Parallel()
+	ca := newTestCA(t, "test CA")
+	keyDER, err := x509.MarshalPKCS8PrivateKey(ca.key)
+	require.NoError(t, err)
+	valid := ca.pem()
+
+	tests := []struct {
+		name        string
+		bundle      []byte
+		errContains string
+	}{
+		{
+			name:        "empty file",
+			bundle:      nil,
+			errContains: "no certificates",
+		},
+		{
+			name:        "not PEM",
+			bundle:      []byte("this is not a certificate\n"),
+			errContains: "no certificates",
+		},
+		{
+			name:        "a block that is not a certificate",
+			bundle:      append(append([]byte{}, valid...), pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER})...),
+			errContains: `"PRIVATE KEY"`,
+		},
+		{
+			name:        "a certificate block that is not a certificate",
+			bundle:      pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: []byte("not DER")}),
+			errContains: "certificate 1",
+		},
+		{
+			name:        "a truncated certificate after a valid one",
+			bundle:      append(append([]byte{}, valid...), valid[:len(valid)/2]...),
+			errContains: "malformed PEM",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			caFile := writeCAFile(t, tt.bundle)
+
+			_, err := LoadConfig(writeTempFile(t, upstreamCAConfig("https://upstream.internal", caFile)))
+
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), `application "pinned": upstream_ca_file`)
+			assert.Contains(t, err.Error(), tt.errContains)
+		})
+	}
+}
