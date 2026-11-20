@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.1 (2026-11-20)
+
+## What's Changed
+* chore(deps): update actions/setup-go action to v7.1.0 by @renovate[bot] in https://github.com/bluesky-social/beyond/pull/64
+* fix(deps): update module github.com/clickhouse/ch-go to v0.76.0 by @renovate[bot] in https://github.com/bluesky-social/beyond/pull/65
+
+
+**Full Changelog**: https://github.com/bluesky-social/beyond/compare/v0.3.0...v0.3.1
+
 ## 0.3.0 (2026-11-20)
 
 ## What's Changed
