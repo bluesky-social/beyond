@@ -1,6 +1,7 @@
 package beyond
 
 import (
+	"bufio"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -105,21 +106,29 @@ const backendAddr = "127.0.0.1"
 func newTLSBackend(t *testing.T, cert tls.Certificate) *tlsBackend {
 	t.Helper()
 	b := &tlsBackend{}
-	b.srv = httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	b.srv = startTLSServer(t, cert, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		b.mu.Lock()
 		b.requests++
 		b.last = r.Clone(r.Context())
 		b.mu.Unlock()
 		_, _ = w.Write([]byte("backend ok"))
 	}))
-	b.srv.TLS = &tls.Config{Certificates: []tls.Certificate{cert}}
-	b.srv.EnableHTTP2 = true
+	return b
+}
+
+// startTLSServer serves handler over TLS with cert, offering HTTP/2 as a real
+// upstream such as Envoy does.
+func startTLSServer(t *testing.T, cert tls.Certificate, handler http.Handler) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewUnstartedServer(handler)
+	srv.TLS = &tls.Config{Certificates: []tls.Certificate{cert}}
+	srv.EnableHTTP2 = true
 	// Several tests provoke handshakes the client aborts; the server logging
 	// each one would bury real failures.
-	b.srv.Config.ErrorLog = log.New(io.Discard, "", 0)
-	b.srv.StartTLS()
-	t.Cleanup(b.srv.Close)
-	return b
+	srv.Config.ErrorLog = log.New(io.Discard, "", 0)
+	srv.StartTLS()
+	t.Cleanup(srv.Close)
+	return srv
 }
 
 func (b *tlsBackend) requestCount() int {
@@ -589,4 +598,86 @@ func TestNewUpstreamCATransport_DiffersFromDefaultOnlyInRoots(t *testing.T) {
 	if base.TLSClientConfig != nil {
 		assert.Nil(t, base.TLSClientConfig.RootCAs)
 	}
+}
+
+// A WebSocket upgrade cannot ride HTTP/2, which the upstream also offers. The
+// transport has to give it an HTTP/1.1 connection of its own, still verified
+// against the bundle, and then carry bytes both ways.
+//
+// Only "websocket" gets that treatment from net/http. Any other Upgrade token
+// sent to an upstream that negotiates HTTP/2 fails in the transport, with or
+// without upstream_ca_file.
+func TestUpstreamCA_WebSocketUpgradeReachesUpstream(t *testing.T) {
+	t.Parallel()
+	ca := newTestCA(t, "test CA")
+	upstream := startTLSServer(t, ca.serverCert(t, backendAddr), http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Upgrade") != "websocket" {
+			http.Error(w, "expected an upgrade", http.StatusBadRequest)
+			return
+		}
+		conn, rw, err := http.NewResponseController(w).Hijack()
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		_, _ = rw.WriteString("HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n")
+		_ = rw.Flush()
+		_, _ = io.Copy(conn, rw)
+	}))
+	h, sm := newUpstreamTLSHandler(t, upstreamTLSApp{
+		name:     "pinned",
+		upstream: upstream.URL,
+		caFile:   writeCAFile(t, ca.pem()),
+	})
+	// A recorder cannot be hijacked, so this test needs beyond on a socket.
+	front := httptest.NewServer(h)
+	t.Cleanup(front.Close)
+
+	req, err := http.NewRequest(http.MethodGet, front.URL+"/", nil)
+	require.NoError(t, err)
+	req.Host = "pinned.example.com"
+	req.Header.Set("Connection", "Upgrade")
+	req.Header.Set("Upgrade", "websocket")
+	setSession(t, sm, req, "alice@example.com", []string{"engineering"})
+
+	conn, err := net.Dial("tcp", front.Listener.Addr().String())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = conn.Close() })
+	require.NoError(t, conn.SetDeadline(time.Now().Add(10*time.Second)))
+	require.NoError(t, req.Write(conn))
+
+	reader := bufio.NewReader(conn)
+	resp, err := http.ReadResponse(reader, req)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusSwitchingProtocols, resp.StatusCode)
+
+	_, err = conn.Write([]byte("ping\n"))
+	require.NoError(t, err)
+	echoed, err := reader.ReadString('\n')
+	require.NoError(t, err)
+	assert.Equal(t, "ping\n", echoed)
+}
+
+// A mint application serves its own page and has no upstream to verify.
+func TestLoadConfig_UpstreamCAFileRejectedOnMintApplication(t *testing.T) {
+	t.Parallel()
+	caFile := writeCAFile(t, newTestCA(t, "test CA").pem())
+	cfgYAML := fmt.Sprintf(`
+applications:
+  mint:
+    host: mint.example.com
+    allowed_groups: [engineering]
+    upstream_ca_file: %s
+    mint_auth:
+      client_id: mint-client
+      issuer: https://auth.example.com/application/o/beyond-mint/
+      api_url: http://authentik.svc/api/v3
+      token_lifetime: 365d
+`, caFile)
+
+	_, err := LoadConfig(writeTempFile(t, cfgYAML))
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `application "mint": upstream_ca_file requires an https upstream`)
 }
