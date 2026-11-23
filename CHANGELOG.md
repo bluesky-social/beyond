@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.2 (2026-11-23)
+
+## What's Changed
+* fix(deps): update module github.com/klauspost/compress to v1.20.5 by @renovate[bot] in https://github.com/bluesky-social/beyond/pull/69
+
+
+**Full Changelog**: https://github.com/bluesky-social/beyond/compare/v0.3.1...v0.3.2
+
 ## 0.3.1 (2026-11-20)
 
 ## What's Changed
