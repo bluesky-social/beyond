@@ -23,7 +23,7 @@ on:
   # Hourly across the weekday release window (UTC; covers 09-16 PT in both PST
   # and PDT) so a dependency range merged overnight ships when it opens.
   schedule:
-    - cron: '23 16-23 * * 1-5'
+    - cron: '24 16-23 * * 1-5'
 
 permissions:
   contents: read
