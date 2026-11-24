@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.3 (2026-11-24)
+
+## What's Changed
+* fix(deps): update module github.com/pierrec/lz4/v4 to v4.1.34 by @renovate[bot] in https://github.com/bluesky-social/beyond/pull/71
+
+
+**Full Changelog**: https://github.com/bluesky-social/beyond/compare/v0.3.2...v0.3.3
+
 ## 0.3.2 (2026-11-23)
 
 ## What's Changed
