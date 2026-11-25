@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.4 (2026-11-25)
+
+## What's Changed
+* fix(deps): update postgres:17-alpine docker digest to f9cf3e1 by @renovate[bot] in https://github.com/bluesky-social/beyond/pull/73
+
+
+**Full Changelog**: https://github.com/bluesky-social/beyond/compare/v0.3.3...v0.3.4
+
 ## 0.3.3 (2026-11-24)
 
 ## What's Changed
