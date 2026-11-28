@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.5 (2026-11-28)
+
+## What's Changed
+* fix(deps): update golang:1.27.4-bookworm docker digest to ce59b41 by @renovate[bot] in https://github.com/bluesky-social/beyond/pull/75
+
+
+**Full Changelog**: https://github.com/bluesky-social/beyond/compare/v0.3.4...v0.3.5
+
 ## 0.3.4 (2026-11-25)
 
 ## What's Changed
